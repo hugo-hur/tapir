@@ -1,0 +1,5 @@
+bin_PROGRAMS = tapefs
+
+tapefs_SOURCES = main.cpp
+tapefs_CPPFLAGS = $(LIBARCHIVE_CFLAGS) $(FUSE_CFLAGS)
+tapefs_LDADD = $(LIBARCHIVE_LIBS) $(FUSE_LIBS)

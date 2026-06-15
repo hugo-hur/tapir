@@ -1,0 +1,49 @@
+# =============================================================================
+# Generated files — do NOT commit. Everything here is reproduced by
+# `autoreconf -i` (bootstrap), `./configure`, and `make`.
+#
+# Tracked source (the only things that belong in git):
+#   configure.ac, Makefile.am, src/Makefile.am, m4/ax_*.m4, src/*.cpp,
+#   README.md, .gitignore
+# =============================================================================
+
+# ── autoreconf -i bootstrap output ───────────────────────────────────────────
+/autom4te.cache/
+/aclocal.m4
+/configure
+/configure~
+configure.lineno
+/config.h.in
+/config.h.in~
+# build-aux holds install-sh, missing, depcomp, compile, config.guess/sub, etc.
+/build-aux/
+Makefile.in
+
+# libtool-generated m4 (only if LT_INIT is ever added; keep the vendored ax_*.m4)
+/m4/libtool.m4
+/m4/ltoptions.m4
+/m4/ltsugar.m4
+/m4/ltversion.m4
+/m4/lt~obsolete.m4
+
+# ── ./configure output ───────────────────────────────────────────────────────
+/config.h
+/config.log
+/config.status
+/stamp-h1
+Makefile
+config.cache
+
+# ── make / compiler output ───────────────────────────────────────────────────
+.deps/
+.dirstamp
+*.o
+*.lo
+*.la
+.libs/
+/src/tapefs
+
+# ── editor / misc ─────────────────────────────────────────────────────────────
+*~
+__pycache__/
+*.pyc
