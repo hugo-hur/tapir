@@ -41,7 +41,7 @@ config.cache
 *.lo
 *.la
 .libs/
-/src/tapefs
+/src/tapir
 
 # ── editor / misc ─────────────────────────────────────────────────────────────
 *~

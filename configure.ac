@@ -1,20 +1,21 @@
 #                                               -*- Autoconf -*-
-# configure.ac — tapefs build configuration
+# configure.ac — tapir build configuration
 #
 # Verifies the project's requirements:
 #   1. C++20 compiler (hard minimum); C++23 preferred for the features below.
 #   2. std::expected and std::print (C++23) — used if available.
 #   3. a usable libarchive >= 3.0.0 with PAX support.
 #   4. libfuse 3 (>= 3.0), required.
+#   5. nlohmann/json (>= 3.0) for parsing the manifest index.
 #
 # Bootstrap with:  autoreconf -i   (the C++ std macros are vendored in m4/, so
 # autoconf-archive is NOT required; pkg-config is used for the libraries).
 
 AC_PREREQ([2.69])
-AC_INIT([tapefs], [0.1.0], [hugo.hurskainen@gmail.com])
+AC_INIT([tapir], [0.1.0], [hugo.hurskainen@gmail.com])
 AC_CONFIG_AUX_DIR([build-aux])
 AC_CONFIG_MACRO_DIR([m4])
-AC_CONFIG_SRCDIR([src/main.cpp])
+AC_CONFIG_SRCDIR([src/tapir.cpp])
 AC_CONFIG_HEADERS([config.h])
 AM_INIT_AUTOMAKE([foreign subdir-objects -Wall])
 
@@ -127,6 +128,29 @@ PKG_CHECK_MODULES([FUSE], [fuse3 >= 3.0], [],
 AC_DEFINE([HAVE_FUSE3], [1], [Define since the project requires libfuse 3.x.])
 AC_DEFINE([FUSE_USE_VERSION], [31], [FUSE API version to compile against.])
 
+# ── 5. nlohmann/json (manifest parsing) ───────────────────────────────────────
+PKG_CHECK_MODULES([JSON], [nlohmann_json >= 3.0], [],
+  [AC_MSG_NOTICE([pkg-config has no nlohmann_json; trying the default include path])
+   AC_LANG_PUSH([C++])
+   AC_CHECK_HEADER([nlohmann/json.hpp], [],
+     [AC_MSG_ERROR([nlohmann/json.hpp not found — install nlohmann-json3-dev])])
+   AC_LANG_POP([C++])
+   JSON_CFLAGS=""; JSON_LIBS=""])
+
+# Functional gate: confirm the header actually compiles under our C++ standard.
+ax_save_CPPFLAGS="$CPPFLAGS"
+CPPFLAGS="$CPPFLAGS $JSON_CFLAGS"
+AC_LANG_PUSH([C++])
+AC_MSG_CHECKING([whether nlohmann/json is usable])
+AC_COMPILE_IFELSE(
+  [AC_LANG_PROGRAM([[#include <nlohmann/json.hpp>]],
+     [[auto j = nlohmann::json::parse("[1,2,3]"); return static_cast<int>(j.size()) - 3;]])],
+  [AC_MSG_RESULT([yes])],
+  [AC_MSG_RESULT([no])
+   AC_MSG_ERROR([nlohmann/json header found but does not compile])])
+AC_LANG_POP([C++])
+CPPFLAGS="$ax_save_CPPFLAGS"
+
 AC_CONFIG_FILES([Makefile src/Makefile])
 AC_OUTPUT
 
@@ -139,4 +163,5 @@ AC_MSG_NOTICE([
     std::print ........ $have_std_print
     libarchive libs ... $LIBARCHIVE_LIBS
     libfuse ........... fuse3  ($FUSE_LIBS)
+    nlohmann/json ..... ${JSON_CFLAGS:-(default include path)}
 ])

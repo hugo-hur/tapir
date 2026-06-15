@@ -1,6 +1,14 @@
-# tapefs
+# tapir
 
-Build configuration for the C++ side of the tar-on-tape project.
+A read-only FUSE filesystem that mounts a tar tape archive (data tar + a separate
+tar-ed `manifest.json` index, as written by `ltfs_to_tar.py`) and exposes it as a
+browsable directory tree. Metadata (`ls`, `stat`) is served from the in-RAM
+manifest; file content is read back through libarchive on demand and cached for
+random access.
+
+**Status:** initial version — mounts the *file* archive (`<archive>.tar` plus its
+sibling `<archive>.tar.manifest.tar`). Mounting a tape device directly
+(`mt seek` to a per-file block) is the next step.
 
 ## Requirements (enforced by `configure`)
 
@@ -10,11 +18,12 @@ Build configuration for the C++ side of the tar-on-tape project.
   **`std::print`** (logging). Control with `--enable-cxx23={auto,yes,no}`.
 - A usable **libarchive >= 3.0.0** with PAX support.
 - **libfuse 3** (>= 3.0) — **required** (no fuse2 fallback).
+- **nlohmann/json** (>= 3.0) — parses the manifest index.
 
 ### Installing the dependencies (Debian/Ubuntu)
 
 ```sh
-sudo apt-get install libarchive-dev libfuse3-dev fuse3
+sudo apt-get install libarchive-dev libfuse3-dev fuse3 nlohmann-json3-dev
 ```
 
 - `libfuse3-dev` provides the fuse3 headers and the `fuse3.pc` that pkg-config
@@ -26,10 +35,20 @@ sudo apt-get install libarchive-dev libfuse3-dev fuse3
 
 ```sh
 autoreconf -i          # bootstrap: generates ./configure (one time / after editing configure.ac)
-./configure            # checks C++20 + libarchive, fails loudly if either is missing
+./configure            # checks C++20/23 + libarchive + libfuse3, fails loudly if any is missing
 make
-./src/tapefs           # smoke test: prints libarchive version, confirms C++20 compiled in
 ```
+
+## Usage
+
+```sh
+./src/tapir <archive.tar> <mountpoint> [fuse options]   # e.g. -f (foreground), -d (debug)
+fusermount3 -u <mountpoint>                             # unmount
+```
+
+`tapir` reads the index from `<archive.tar>.manifest.tar`, then serves the tree
+read-only. The archive is treated as immutable, so attributes and data are cached
+aggressively by the kernel.
 
 `./configure` accepts the usual overrides, e.g. `./configure CXX=clang++`,
 `./configure --enable-cxx23=no` (force the C++20 baseline), or
