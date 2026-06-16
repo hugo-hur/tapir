@@ -34,10 +34,28 @@
 
 using namespace tapir;
 
-static int do_import(const std::string& dev, int tape_file, int bf, int mbf) {
+static int do_import(const std::string& dev, int tape_file, int bf_hint, int mbf) {
     Tape  tape(dev, mbf);
-    Index idx;
 
+    // Auto-detect the data archive's block size; -b (bf_hint) is only an override.
+    int bf = bf_hint;
+    const int probed = tape.probe_block_size(tape_file);
+    if (probed > 0) {
+        const int probed_bf = (probed + 511) / 512;   // round up so the read buffer ≥ block
+        if (bf_hint > 0 && bf_hint != probed_bf)
+            std::fprintf(stderr, "mktapir: WARNING: -b %d disagrees with detected %d bytes "
+                                 "(block factor %d); using detected\n", bf_hint, probed, probed_bf);
+        bf = probed_bf;
+        std::fprintf(stderr, "mktapir: tape file %d block size = %d bytes (block factor %d)\n",
+                     tape_file, probed, bf);
+    } else if (bf_hint > 0) {
+        std::fprintf(stderr, "mktapir: could not auto-detect block size; using -b %d\n", bf_hint);
+    } else {
+        std::fprintf(stderr, "mktapir: could not detect block size at tape file %d; pass -b\n", tape_file);
+        return 1;
+    }
+
+    Index idx;
     std::string manifest;
     if (tape.read_latest_manifest(manifest)) {
         try {
@@ -124,10 +142,11 @@ static void usage(const char* argv0) {
     std::fprintf(stderr,
         "mktapir — build/convert the tapir index on a tape\n"
         "usage:\n"
-        "  %s import <tape-device> -f <tape-file> -b <block-factor> [-m <manifest-bf>]\n"
-        "      Scan the existing tar at tape file N (block factor B), add its members\n"
-        "      to the index (recording B), and write an updated manifest at end of tape.\n"
-        "      Run once per data tape file to convert a non-tapir tape.\n"
+        "  %s import <tape-device> -f <tape-file> [-b <block-factor>] [-m <manifest-bf>]\n"
+        "      Scan the existing tar at tape file N and add its members to the index,\n"
+        "      then write an updated manifest at end of tape. The block size is\n"
+        "      auto-detected; pass -b only to override. Run once per data tape file\n"
+        "      to convert a non-tapir tape.\n"
         "  %s append <tape-device> <file.tar> [-b <block-factor>] [-m <manifest-bf>]\n"
         "      Re-stream a tar from disk into a new tape file at EOD and add its\n"
         "      contents to the index.\n", argv0, argv0);
@@ -138,7 +157,7 @@ int main(int argc, char** argv) {
 
     if (argc >= 3 && std::strcmp(argv[1], "import") == 0) {
         const std::string dev = argv[2];
-        int tape_file = -1, bf = 512, mbf = 512;
+        int tape_file = -1, bf = 0 /* 0 = auto-detect */, mbf = 512;
         for (int i = 3; i < argc; ++i) {
             const std::string a = argv[i];
             if      ((a == "-f" || a == "--tape-file")             && i + 1 < argc) tape_file = std::atoi(argv[++i]);

@@ -30,6 +30,10 @@ public:
     bool bsf(int n);
     int  file_number();             // current tape file number (mt status), or -1 on error
 
+    // Detect a tape file's physical block size in bytes (one oversized read in
+    // variable-block mode returns exactly one block), or -1 on failure.
+    int  probe_block_size(int tape_file);
+
     // Read manifest.json from the latest manifest (the last tape file).
     bool read_latest_manifest(std::string& out);
 

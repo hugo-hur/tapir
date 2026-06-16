@@ -3,6 +3,8 @@
 #include <archive.h>
 #include <archive_entry.h>
 
+#include <vector>
+
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <sys/mtio.h>
@@ -48,6 +50,15 @@ bool Tape::position_latest_manifest() {
     const int target = n - 1;
     if (target == 0) return rewind();
     return bsf(2) && fsf(1);
+}
+
+int Tape::probe_block_size(int tape_file) {
+    if (!position_data(tape_file)) return -1;
+    Fd fd(::open(dev_.c_str(), O_RDONLY));
+    if (!fd.valid()) return -1;
+    std::vector<char> buf(1u << 22);          // 4 MiB: larger than any expected tape block
+    const ssize_t n = ::read(fd.get(), buf.data(), buf.size());  // one read → one physical block
+    return n > 0 ? static_cast<int>(n) : -1;
 }
 
 // ── reads ─────────────────────────────────────────────────────────────────────
