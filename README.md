@@ -1,30 +1,49 @@
 # tapir
 
-A read-only FUSE filesystem that mounts a tar tape archive (data tar + a separate
-tar-ed `manifest.json` index, as written by `ltfs_to_tar.py`) and exposes it as a
-browsable directory tree. Metadata (`ls`, `stat`) is served from the in-RAM
-manifest; file content is read back through libarchive on demand and cached for
-random access.
+A FUSE filesystem and tools for browsing/appending to a **tar tape archive** (a
+data tar at tape file N + a cumulative `manifest.json` index tar after it, as
+written by `ltfs_to_tar.py`). Metadata (`ls`, `stat`) is served from the in-RAM
+index; content is read back through libarchive on demand and cached.
 
-**Status:** initial version — mounts the *file* archive (`<archive>.tar` plus its
-sibling `<archive>.tar.manifest.tar`). Mounting a tape device directly
-(`mt seek` to a per-file block) is the next step.
+Built around a shared static library, **libtapir** (cf. LTFS's `libltfs`):
+
+- **`tapir`** — read/append/delete FUSE3 mount of the tape. Appends stream a new
+  file (write-once, sealed on close); deletes are index-only; a new index is
+  written to tape at unmount, only if anything changed.
+- **`tfsck`** — offline verifier: streams each data tape file (at its recorded
+  block factor), recomputes SHA-256 and checks it against the index
+  (deleted-but-retained members are reported as *orphans*, not failures).
+- **`mktapir`** — build/convert the index.
+  - `import` scans an existing tar already at a given tape file + block factor and
+    adds its members to the index — run once per data tape file to make a
+    pre-existing (non-tapir) tape tapir-compatible.
+  - `append` re-streams a tar from disk into a new tape file at EOD and indexes it.
+
+  Each archive's block factor is stored per-archive in the manifest, so tapes
+  mixing block sizes convert correctly.
+
+**Status:** tape-only (operates on the no-rewind device, e.g. `…-nst`). Reads
+currently stream a whole data tape file to find a member; per-file `mt seek`
+coordinates are the next step for fast random access.
 
 ## Requirements (enforced by `configure`)
 
 - A C++ compiler with working **C++20** support (hard minimum).
 - **C++23** is preferred and selected automatically when available, enabling
-  **`std::expected`** (error propagation across the FUSE boundary) and
-  **`std::print`** (logging). Control with `--enable-cxx23={auto,yes,no}`.
+  **`std::expected`** and **`std::print`**. Control with `--enable-cxx23={auto,yes,no}`.
 - A usable **libarchive >= 3.0.0** with PAX support.
-- **libfuse 3** (>= 3.0) — **required** (no fuse2 fallback).
+- **libfuse 3** (>= 3.0) — required by `tapir` (no fuse2 fallback).
 - **nlohmann/json** (>= 3.0) — parses the manifest index.
+- **libcrypto** (OpenSSL) — SHA-256 of appended files and `tfsck`.
 
 ### Installing the dependencies (Debian/Ubuntu)
 
 ```sh
-sudo apt-get install libarchive-dev libfuse3-dev fuse3 nlohmann-json3-dev
+sudo apt-get install libarchive-dev libfuse3-dev fuse3 nlohmann-json3-dev libssl-dev
 ```
+
+Tape positioning uses the Linux `st` driver ioctls (`<sys/mtio.h>`) directly, so
+no `mt` binary is required at runtime.
 
 - `libfuse3-dev` provides the fuse3 headers and the `fuse3.pc` that pkg-config
   needs; `fuse3` provides the `fusermount3` mount helper used at runtime. On this
@@ -34,21 +53,31 @@ sudo apt-get install libarchive-dev libfuse3-dev fuse3 nlohmann-json3-dev
 ## Build
 
 ```sh
-autoreconf -i          # bootstrap: generates ./configure (one time / after editing configure.ac)
-./configure            # checks C++20/23 + libarchive + libfuse3, fails loudly if any is missing
+./autogen.sh           # bootstrap: regenerates ./configure (after checkout / editing configure.ac)
+./configure            # checks C++20/23 + libarchive + libfuse3 + nlohmann/json + libcrypto
 make
 ```
 
 ## Usage
 
 ```sh
-./src/tapir <archive.tar> <mountpoint> [fuse options]   # e.g. -f (foreground), -d (debug)
-fusermount3 -u <mountpoint>                             # unmount
+# mount (use the no-rewind by-id device); -b N is the manifest block factor (×512, default 512)
+./src/tapir /dev/tape/by-id/scsi-XXXX-nst <mountpoint> [-b N] [fuse options]
+fusermount3 -u <mountpoint>      # unmount → writes a fresh index to tape iff anything changed
+
+# verify a tape against its manifest
+./src/tfsck /dev/tape/by-id/scsi-XXXX-nst [-b N]
+
+# convert an existing (non-tapir) tape: index each data tape file with its block factor
+./src/mktapir import /dev/tape/by-id/scsi-XXXX-nst -f <tape-file> -b <block-factor>
+
+# append a tar from disk into a new tape file and index it
+./src/mktapir append /dev/tape/by-id/scsi-XXXX-nst /path/to/file.tar -b <block-factor>
 ```
 
-`tapir` reads the index from `<archive.tar>.manifest.tar`, then serves the tree
-read-only. The archive is treated as immutable, so attributes and data are cached
-aggressively by the kernel.
+`tapir` reads the latest manifest from the end of the tape, serves the tree, and
+streams data tape files on demand to read members. Appends are committed as a new
+tape file at unmount; deletes are index-only (the data on tape is never rewritten).
 
 `./configure` accepts the usual overrides, e.g. `./configure CXX=clang++`,
 `./configure --enable-cxx23=no` (force the C++20 baseline), or
