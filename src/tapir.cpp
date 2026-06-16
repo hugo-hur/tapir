@@ -116,6 +116,7 @@ namespace
             st->st_blocks = static_cast<blkcnt_t>((n->size + 511) / 512);
         }
     }
+    // TODO move this into index class?
     void flush_index()
     {
         std::vector<OutFile> staged;
@@ -160,6 +161,7 @@ namespace
         return nullptr;
     }
 
+    // TODO: add forced data and index flushing on "sync" command (add the missing fsync function).
     inline static void flush_data()
     {
         std::lock_guard<std::mutex> lk(g->mtx);
@@ -169,6 +171,7 @@ namespace
         g->writers.clear();
     }
 
+    // Unmounting / exiting
     void t_destroy(void *)
     {
         if (g)
@@ -221,6 +224,7 @@ namespace
         return 0;
     }
 
+    // Creates emty file
     int t_create(const char *path, mode_t, struct fuse_file_info *fi)
     {
         std::lock_guard<std::mutex> lk(g->mtx);

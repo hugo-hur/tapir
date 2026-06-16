@@ -17,6 +17,12 @@
 namespace tapir
 {
 
+    // TODO: add hardware encryption possibility (possibly stenc library if such thing exists)
+    // and openssl fallback for AES256-GCM(the same algorithm as the LTO hardware uses), also encrypting the index.
+    // In software fallback mode allow only hex or base64 256 bit keys, no weak passphrases. Use tape file numbers as iv:s.
+    // AES-GCM is authenticated scheme and instantly tells us that the output is not ok, so key correctness is not necessary to check separately for preventing output of corrupted data.
+    // Also add check to configure.ac that the AES256-GCM features are available in the used openssl library.
+    // Also add flag to configure to disable these encryption features.
     class Tape
     {
     public:
