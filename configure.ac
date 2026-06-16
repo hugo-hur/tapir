@@ -7,6 +7,7 @@
 #   3. a usable libarchive >= 3.0.0 with PAX support.
 #   4. libfuse 3 (>= 3.0), required.
 #   5. nlohmann/json (>= 3.0) for parsing the manifest index.
+#   6. libcrypto (OpenSSL) for SHA-256 of appended files.
 #
 # Bootstrap with:  autoreconf -i   (the C++ std macros are vendored in m4/, so
 # autoconf-archive is NOT required; pkg-config is used for the libraries).
@@ -18,11 +19,13 @@ AC_CONFIG_MACRO_DIR([m4])
 AC_CONFIG_SRCDIR([src/tapir.cpp])
 AC_CONFIG_HEADERS([config.h])
 AM_INIT_AUTOMAKE([foreign subdir-objects -Wall])
+AM_PROG_AR
 
 # ── 1. C++ compiler + standard ────────────────────────────────────────────────
 # C++20 is the hard minimum. C++23 is preferred (for std::expected / std::print)
 # and selected automatically when available; control with --enable-cxx23.
 AC_PROG_CXX
+AC_PROG_RANLIB
 
 AC_ARG_ENABLE([cxx23],
   [AS_HELP_STRING([--enable-cxx23@<:@=auto|yes|no@:>@],
@@ -151,6 +154,10 @@ AC_COMPILE_IFELSE(
 AC_LANG_POP([C++])
 CPPFLAGS="$ax_save_CPPFLAGS"
 
+# ── 6. libcrypto (SHA-256 for appended files) ─────────────────────────────────
+PKG_CHECK_MODULES([CRYPTO], [libcrypto >= 1.1], [],
+  [AC_MSG_ERROR([libcrypto (OpenSSL) >= 1.1 is required — install libssl-dev])])
+
 AC_CONFIG_FILES([Makefile src/Makefile])
 AC_OUTPUT
 
@@ -164,4 +171,5 @@ AC_MSG_NOTICE([
     libarchive libs ... $LIBARCHIVE_LIBS
     libfuse ........... fuse3  ($FUSE_LIBS)
     nlohmann/json ..... ${JSON_CFLAGS:-(default include path)}
+    libcrypto ......... $CRYPTO_LIBS
 ])
