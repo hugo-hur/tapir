@@ -20,80 +20,128 @@
 #include <sys/types.h>
 #include <unistd.h>
 
-namespace tapir {
+namespace tapir
+{
 
-// ── compile-time constants + invariants ──────────────────────────────────────
-inline constexpr std::size_t kTarBlock    = 512;       // tar record size
-inline constexpr std::size_t kReadBlock   = 1u << 16;  // libarchive read buffer
-inline constexpr ::mode_t    kDirMode     = 0555;      // dirs: read + traverse
-inline constexpr ::mode_t    kFileMode    = 0444;      // sealed files: read-only
-inline constexpr ::mode_t    kNewFileMode = 0644;      // a file currently being written
+    // ── compile-time constants + invariants ──────────────────────────────────────
+    inline constexpr std::size_t kTarBlock = 512;       // tar record size
+    inline constexpr std::size_t kReadBlock = 1u << 16; // libarchive read buffer
+    inline constexpr ::mode_t kDirMode = 0555;          // dirs: read + traverse
+    inline constexpr ::mode_t kFileMode = 0444;         // sealed files: read-only
+    inline constexpr ::mode_t kNewFileMode = 0644;      // a file currently being written
 
-static_assert(sizeof(off_t) == 8,
-              "tapir needs a 64-bit off_t — build with _FILE_OFFSET_BITS=64 (FUSE_CFLAGS)");
-static_assert(kReadBlock % kTarBlock == 0, "read buffer must be a whole number of tar records");
-static_assert(kFileMode == 0444 && kDirMode == 0555, "read-only mode bits");
+    static_assert(sizeof(off_t) == 8,
+                  "tapir needs a 64-bit off_t — build with _FILE_OFFSET_BITS=64 (FUSE_CFLAGS)");
+    static_assert(kReadBlock % kTarBlock == 0, "read buffer must be a whole number of tar records");
+    static_assert(kFileMode == 0444 && kDirMode == 0555, "read-only mode bits");
 
-// constexpr hex nibble — used to format digests; checked at compile time.
-constexpr char hex_digit(unsigned v) { return v < 10 ? char('0' + v) : char('a' + (v - 10)); }
-static_assert(hex_digit(0) == '0' && hex_digit(10) == 'a' && hex_digit(15) == 'f');
+    // constexpr hex nibble — used to format digests; checked at compile time.
+    constexpr char hex_digit(unsigned v) { return v < 10 ? char('0' + v) : char('a' + (v - 10)); }
+    static_assert(hex_digit(0) == '0' && hex_digit(10) == 'a' && hex_digit(15) == 'f');
 
-// ── owning file descriptor ────────────────────────────────────────────────────
-class Fd {
-public:
-    Fd() = default;
-    explicit Fd(int fd) : fd_(fd) {}
-    Fd(const Fd&) = delete;
-    Fd& operator=(const Fd&) = delete;
-    Fd(Fd&& o) noexcept : fd_(o.fd_) { o.fd_ = -1; }
-    Fd& operator=(Fd&& o) noexcept {
-        if (this != &o) { reset(); fd_ = o.fd_; o.fd_ = -1; }
-        return *this;
-    }
-    ~Fd() { reset(); }
-    int  get()   const { return fd_; }
-    bool valid() const { return fd_ >= 0; }
-    void reset() { if (fd_ >= 0) { ::close(fd_); fd_ = -1; } }   // the only close() in the codebase
-private:
-    int fd_ = -1;
-};
-
-// ── libarchive / OpenSSL handles ──────────────────────────────────────────────
-struct ArchiveReadDeleter  { void operator()(struct archive* a)       const noexcept { if (a) archive_read_free(a); } };
-struct ArchiveWriteDeleter { void operator()(struct archive* a)       const noexcept { if (a) archive_write_free(a); } };
-struct ArchiveEntryDeleter { void operator()(struct archive_entry* e) const noexcept { if (e) archive_entry_free(e); } };
-struct EvpCtxDeleter       { void operator()(EVP_MD_CTX* c)           const noexcept { if (c) EVP_MD_CTX_free(c); } };
-
-using ArchiveReadPtr  = std::unique_ptr<struct archive,       ArchiveReadDeleter>;
-using ArchiveWritePtr = std::unique_ptr<struct archive,       ArchiveWriteDeleter>;
-using ArchiveEntryPtr = std::unique_ptr<struct archive_entry, ArchiveEntryDeleter>;
-using EvpCtxPtr       = std::unique_ptr<EVP_MD_CTX,           EvpCtxDeleter>;
-
-// ── incremental SHA-256 ───────────────────────────────────────────────────────
-class Sha256 {
-public:
-    Sha256() : ctx_(EVP_MD_CTX_new()) {
-        EVP_DigestInit_ex(ctx_.get(), EVP_sha256(), nullptr);
-    }
-    void update(const void* p, std::size_t n) { EVP_DigestUpdate(ctx_.get(), p, n); }
-
-    std::string hex() const {
-        EvpCtxPtr dup(EVP_MD_CTX_new());                 // copy so the live context stays usable
-        EVP_MD_CTX_copy_ex(dup.get(), ctx_.get());
-        unsigned char md[EVP_MAX_MD_SIZE];
-        unsigned len = 0;
-        EVP_DigestFinal_ex(dup.get(), md, &len);
-        std::string out;
-        out.reserve(static_cast<std::size_t>(len) * 2);
-        for (unsigned i = 0; i < len; ++i) {
-            out += hex_digit(md[i] >> 4);
-            out += hex_digit(md[i] & 0x0F);
+    // ── owning file descriptor ────────────────────────────────────────────────────
+    class Fd
+    {
+    public:
+        Fd() = default;
+        explicit Fd(int fd) : fd_(fd) {}
+        Fd(const Fd &) = delete;
+        Fd &operator=(const Fd &) = delete;
+        Fd(Fd &&o) noexcept : fd_(o.fd_) { o.fd_ = -1; }
+        Fd &operator=(Fd &&o) noexcept
+        {
+            if (this != &o)
+            {
+                reset();
+                fd_ = o.fd_;
+                o.fd_ = -1;
+            }
+            return *this;
         }
-        return out;
-    }
-private:
-    EvpCtxPtr ctx_;
-};
+        ~Fd() { reset(); }
+        int get() const { return fd_; }
+        bool valid() const { return fd_ >= 0; }
+        void reset()
+        {
+            if (fd_ >= 0)
+            {
+                ::close(fd_);
+                fd_ = -1;
+            }
+        } // the only close() in the codebase
+    private:
+        int fd_ = -1;
+    };
+
+    // ── libarchive / OpenSSL handles ──────────────────────────────────────────────
+    struct ArchiveReadDeleter
+    {
+        void operator()(struct archive *a) const noexcept
+        {
+            if (a)
+                archive_read_free(a);
+        }
+    };
+    struct ArchiveWriteDeleter
+    {
+        void operator()(struct archive *a) const noexcept
+        {
+            if (a)
+                archive_write_free(a);
+        }
+    };
+    struct ArchiveEntryDeleter
+    {
+        void operator()(struct archive_entry *e) const noexcept
+        {
+            if (e)
+                archive_entry_free(e);
+        }
+    };
+    struct EvpCtxDeleter
+    {
+        void operator()(EVP_MD_CTX *c) const noexcept
+        {
+            if (c)
+                EVP_MD_CTX_free(c);
+        }
+    };
+
+    using ArchiveReadPtr = std::unique_ptr<struct archive, ArchiveReadDeleter>;
+    using ArchiveWritePtr = std::unique_ptr<struct archive, ArchiveWriteDeleter>;
+    using ArchiveEntryPtr = std::unique_ptr<struct archive_entry, ArchiveEntryDeleter>;
+    using EvpCtxPtr = std::unique_ptr<EVP_MD_CTX, EvpCtxDeleter>;
+
+    // ── incremental SHA-256 ───────────────────────────────────────────────────────
+    class Sha256
+    {
+    public:
+        Sha256() : ctx_(EVP_MD_CTX_new())
+        {
+            EVP_DigestInit_ex(ctx_.get(), EVP_sha256(), nullptr);
+        }
+        void update(const void *p, std::size_t n) { EVP_DigestUpdate(ctx_.get(), p, n); }
+
+        std::string hex() const
+        {
+            EvpCtxPtr dup(EVP_MD_CTX_new()); // copy so the live context stays usable
+            EVP_MD_CTX_copy_ex(dup.get(), ctx_.get());
+            unsigned char md[EVP_MAX_MD_SIZE];
+            unsigned len = 0;
+            EVP_DigestFinal_ex(dup.get(), md, &len);
+            std::string out;
+            out.reserve(static_cast<std::size_t>(len) * 2);
+            for (unsigned i = 0; i < len; ++i)
+            {
+                out += hex_digit(md[i] >> 4);
+                out += hex_digit(md[i] & 0x0F);
+            }
+            return out;
+        }
+
+    private:
+        EvpCtxPtr ctx_;
+    };
 
 } // namespace tapir
 

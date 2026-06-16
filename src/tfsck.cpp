@@ -11,7 +11,7 @@
 #endif
 
 #ifdef HAVE_CONFIG_H
-#  include "config.h"
+#include "config.h"
 #endif
 
 #include "index.hpp"
@@ -26,40 +26,54 @@
 
 using namespace tapir;
 
-int main(int argc, char** argv) {
+int main(int argc, char **argv)
+{
     std::setlocale(LC_ALL, "");
 
     std::string device;
     int bf = 512;
-    for (int i = 1; i < argc; ++i) {
+    for (int i = 1; i < argc; ++i)
+    {
         const std::string a = argv[i];
-        if ((a == "-b" || a == "--block-factor") && i + 1 < argc) { bf = std::atoi(argv[++i]); continue; }
-        if (device.empty() && !a.empty() && a[0] != '-') device = a;
+        if ((a == "-b" || a == "--block-factor") && i + 1 < argc)
+        {
+            bf = std::atoi(argv[++i]);
+            continue;
+        }
+        if (device.empty() && !a.empty() && a[0] != '-')
+            device = a;
     }
-    if (device.empty()) {
+    if (device.empty())
+    {
         std::fprintf(stderr, "tfsck — verify a tar tape archive against its manifest\n"
-                             "usage: %s <tape-device> [-b N]\n", argv[0]);
+                             "usage: %s <tape-device> [-b N]\n",
+                     argv[0]);
         return 2;
     }
 
     Tape tape(device, bf);
     std::string manifest_json;
-    if (!tape.read_latest_manifest(manifest_json)) {
+    if (!tape.read_latest_manifest(manifest_json))
+    {
         std::fprintf(stderr, "tfsck: could not read a manifest from %s\n", device.c_str());
         return 1;
     }
     Index index;
-    try {
+    try
+    {
         index.load(manifest_json);
-    } catch (const std::exception& ex) {
+    }
+    catch (const std::exception &ex)
+    {
         std::fprintf(stderr, "tfsck: %s\n", ex.what());
         return 1;
     }
 
     // Group expected files by data tape file.
-    std::map<int, std::map<std::string, std::string>> expected;   // dtf -> {path: sha256}
-    std::map<int, int>                                bf_of;       // dtf -> block_factor
-    for (const auto& f : index.flat()) {
+    std::map<int, std::map<std::string, std::string>> expected; // dtf -> {path: sha256}
+    std::map<int, int> bf_of;                                   // dtf -> block_factor
+    for (const auto &f : index.flat())
+    {
         expected[f.data_tape_file][f.path] = f.sha256;
         bf_of[f.data_tape_file] = f.block_factor ? f.block_factor : bf;
     }
@@ -67,33 +81,42 @@ int main(int argc, char** argv) {
     std::printf("=== tfsck %s ===\n", device.c_str());
     int failures = 0, orphans = 0, verified = 0;
 
-    for (auto& [dtf, want] : expected) {
+    for (auto &[dtf, want] : expected)
+    {
         std::set<std::string> seen;
         std::printf("  tape file %d (block factor %d): %zu file(s)\n", dtf, bf_of[dtf], want.size());
         const bool ok = tape.scan_archive(
             dtf, bf_of[dtf],
-            [&](const std::string& name, const std::string& sha, uint64_t) {
+            [&](const std::string &name, const std::string &sha, uint64_t)
+            {
                 seen.insert(name);
                 auto it = want.find(name);
-                if (it == want.end()) {
-                    ++orphans;                              // present on tape, not indexed (a prior delete)
+                if (it == want.end())
+                {
+                    ++orphans; // present on tape, not indexed (a prior delete)
                     return;
                 }
-                if (it->second.empty() || it->second == sha) {
+                if (it->second.empty() || it->second == sha)
+                {
                     ++verified;
-                } else {
+                }
+                else
+                {
                     ++failures;
                     std::printf("    FAIL  %s: sha256 mismatch\n", name.c_str());
                 }
             });
-        if (!ok) {
+        if (!ok)
+        {
             std::printf("    ERROR reading tape file %d\n", dtf);
             ++failures;
             continue;
         }
-        for (const auto& [path, sha] : want) {
+        for (const auto &[path, sha] : want)
+        {
             (void)sha;
-            if (!seen.count(path)) {
+            if (!seen.count(path))
+            {
                 ++failures;
                 std::printf("    FAIL  %s: missing from archive\n", path.c_str());
             }
@@ -102,7 +125,8 @@ int main(int argc, char** argv) {
 
     std::printf("--- %d verified, %d orphan(s) (deleted-but-retained), %d failure(s) ---\n",
                 verified, orphans, failures);
-    if (failures) {
+    if (failures)
+    {
         std::printf("=== tfsck: FAILED ===\n");
         return 1;
     }

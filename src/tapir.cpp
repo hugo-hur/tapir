@@ -16,7 +16,7 @@
 #endif
 
 #ifdef HAVE_CONFIG_H
-#  include "config.h"
+#include "config.h"
 #endif
 
 #include <fuse.h>
@@ -45,290 +45,392 @@ static_assert(FUSE_USE_VERSION >= 30, "tapir requires the libfuse 3 API");
 
 using namespace tapir;
 
-namespace tapir {
-struct WriteHandle {
-    std::string path;
-    Node*       node = nullptr;   // non-owning: lives in the Index tree
-    Fd          fd;               // staging temp file (anonymous)
-    uint64_t    pos = 0;          // next expected (sequential) write offset
-    Sha256      sha;
-};
+namespace tapir
+{
+    struct WriteHandle
+    {
+        std::string path;
+        Node *node = nullptr; // non-owning: lives in the Index tree
+        Fd fd;                // staging temp file (anonymous)
+        uint64_t pos = 0;     // next expected (sequential) write offset
+        Sha256 sha;
+    };
 } // namespace tapir
 
-namespace {
+namespace
+{
 
-struct CacheEntry { Fd fd; uint64_t size = 0; };
+    struct CacheEntry
+    {
+        Fd fd;
+        uint64_t size = 0;
+    };
 
-struct State {
-    std::unique_ptr<Tape> tape;
-    int                   block_factor = 512;
-    Index                 index;
-    time_t                mtime = 0;
-    uid_t                 uid = 0;
-    gid_t                 gid = 0;
+    struct State
+    {
+        std::unique_ptr<Tape> tape;
+        int block_factor = 512;
+        Index index;
+        time_t mtime = 0;
+        uid_t uid = 0;
+        gid_t gid = 0;
 
-    std::mutex                                       mtx;
-    std::map<std::string, CacheEntry>                cache;
-    std::map<uint64_t, std::unique_ptr<WriteHandle>> writers;
-    uint64_t                                         next_h = 1;
-};
+        std::mutex mtx;
+        std::map<std::string, CacheEntry> cache;
+        std::map<uint64_t, std::unique_ptr<WriteHandle>> writers;
+        uint64_t next_h = 1;
+    };
 
-State* g = nullptr;
+    State *g = nullptr;
 
-constexpr const char* member_name(const char* path) {
-    return (path && path[0] == '/') ? path + 1 : path;
-}
-
-Fd make_temp() {
-    char tmpl[] = "/tmp/tapir-writeXXXXXX";
-    int fd = mkstemp(tmpl);
-    if (fd >= 0) ::unlink(tmpl);
-    return Fd(fd);
-}
-
-void fill_stat(const Node* n, struct stat* st) {
-    std::memset(st, 0, sizeof(*st));
-    st->st_uid = g->uid;
-    st->st_gid = g->gid;
-    st->st_atime = st->st_mtime = st->st_ctime = g->mtime;
-    if (n->is_dir) {
-        st->st_mode  = S_IFDIR | kDirMode;
-        st->st_nlink = 2;
-    } else {
-        st->st_mode   = S_IFREG | (n->writing ? kNewFileMode : kFileMode);
-        st->st_nlink  = 1;
-        st->st_size   = static_cast<off_t>(n->size);
-        st->st_blocks = static_cast<blkcnt_t>((n->size + 511) / 512);
+    constexpr const char *member_name(const char *path)
+    {
+        return (path && path[0] == '/') ? path + 1 : path;
     }
-}
 
-void flush_index() {
-    std::vector<OutFile> staged;
-    std::function<void(const Node*, const std::string&)> walk =
-        [&](const Node* n, const std::string& prefix) {
-            for (const auto& [name, child] : n->children) {
+    Fd make_temp()
+    {
+        char tmpl[] = "/tmp/tapir-writeXXXXXX";
+        int fd = mkstemp(tmpl);
+        if (fd >= 0)
+            ::unlink(tmpl);
+        return Fd(fd);
+    }
+
+    void fill_stat(const Node *n, struct stat *st)
+    {
+        std::memset(st, 0, sizeof(*st));
+        st->st_uid = g->uid;
+        st->st_gid = g->gid;
+        st->st_atime = st->st_mtime = st->st_ctime = g->mtime;
+        if (n->is_dir)
+        {
+            st->st_mode = S_IFDIR | kDirMode;
+            st->st_nlink = 2;
+        }
+        else
+        {
+            st->st_mode = S_IFREG | (n->writing ? kNewFileMode : kFileMode);
+            st->st_nlink = 1;
+            st->st_size = static_cast<off_t>(n->size);
+            st->st_blocks = static_cast<blkcnt_t>((n->size + 511) / 512);
+        }
+    }
+    void flush_index()
+    {
+        std::vector<OutFile> staged;
+        std::function<void(const Node *, const std::string &)> walk =
+            [&](const Node *n, const std::string &prefix)
+        {
+            for (const auto &[name, child] : n->children)
+            {
                 const std::string p = prefix.empty() ? name : prefix + "/" + name;
-                if (child->is_dir) walk(child.get(), p);
-                else if (child->staged) staged.push_back({p, child->staged->fd.get(), child->staged->size});
+                if (child->is_dir)
+                    walk(child.get(), p);
+                else if (child->staged)
+                    staged.push_back({p, child->staged->fd.get(), child->staged->size});
             }
         };
-    walk(g->index.root(), "");
+        walk(g->index.root(), "");
 
-    int dtf = 0;
-    std::function<bool(struct archive*)> writer;
-    if (!staged.empty())
-        writer = [&](struct archive* a) { return tar_write_files(a, staged); };
-    const bool ok = g->tape->append(
-        g->block_factor, writer,
-        [&](int data_tape_file) { return g->index.serialize(data_tape_file, g->block_factor); },
-        dtf);
-    if (!ok)
-        std::fprintf(stderr, "tapir: FAILED to write index/data to tape — changes not committed\n");
-    else
-        std::fprintf(stderr, "tapir: committed %zu appended file(s); new data at tape file %d\n",
-                     staged.size(), dtf);
-}
-
-// ── FUSE ops ──────────────────────────────────────────────────────────────────
-void* t_init(struct fuse_conn_info*, struct fuse_config* cfg) {
-    cfg->kernel_cache     = 1;
-    cfg->entry_timeout    = 1;
-    cfg->attr_timeout     = 1;
-    cfg->negative_timeout = 0;
-    return nullptr;
-}
-
-void t_destroy(void*) {
-    if (!g) return;
-    std::lock_guard<std::mutex> lk(g->mtx);
-    if (g->index.dirty()) flush_index();
-    g->cache.clear();
-    g->writers.clear();
-}
-
-int t_getattr(const char* path, struct stat* st, struct fuse_file_info*) {
-    std::lock_guard<std::mutex> lk(g->mtx);
-    const Node* n = g->index.resolve(path);
-    if (!n) return -ENOENT;
-    fill_stat(n, st);
-    return 0;
-}
-
-int t_readdir(const char* path, void* buf, fuse_fill_dir_t filler,
-              off_t, struct fuse_file_info*, enum fuse_readdir_flags) {
-    std::lock_guard<std::mutex> lk(g->mtx);
-    const Node* n = g->index.resolve(path);
-    if (!n) return -ENOENT;
-    if (!n->is_dir) return -ENOTDIR;
-    filler(buf, ".",  nullptr, 0, static_cast<fuse_fill_dir_flags>(0));
-    filler(buf, "..", nullptr, 0, static_cast<fuse_fill_dir_flags>(0));
-    for (const auto& [name, child] : n->children) {
-        struct stat st;
-        fill_stat(child.get(), &st);
-        filler(buf, name.c_str(), &st, 0, FUSE_FILL_DIR_PLUS);
+        int dtf = 0;
+        std::function<bool(struct archive *)> writer;
+        if (!staged.empty())
+            writer = [&](struct archive *a)
+            { return tar_write_files(a, staged); };
+        const bool ok = g->tape->append(
+            g->block_factor, writer,
+            [&](int data_tape_file)
+            { return g->index.serialize(data_tape_file, g->block_factor); },
+            dtf);
+        if (!ok)
+            std::fprintf(stderr, "tapir: FAILED to write index/data to tape — changes not committed\n");
+        else
+            std::fprintf(stderr, "tapir: committed %zu appended file(s); new data at tape file %d\n",
+                         staged.size(), dtf);
     }
-    return 0;
-}
 
-int t_open(const char* path, struct fuse_file_info* fi) {
-    std::lock_guard<std::mutex> lk(g->mtx);
-    const Node* n = g->index.resolve(path);
-    if (!n) return -ENOENT;
-    if (n->is_dir) return -EISDIR;
-    if ((fi->flags & O_ACCMODE) != O_RDONLY) return -EPERM;   // sealed: read-or-delete only
-    fi->fh = 0;
-    return 0;
-}
+    // ── FUSE ops ──────────────────────────────────────────────────────────────────
+    void *t_init(struct fuse_conn_info *, struct fuse_config *cfg)
+    {
+        cfg->kernel_cache = 1;
+        cfg->entry_timeout = 1;
+        cfg->attr_timeout = 1;
+        cfg->negative_timeout = 0;
+        return nullptr;
+    }
 
-int t_create(const char* path, mode_t, struct fuse_file_info* fi) {
-    std::lock_guard<std::mutex> lk(g->mtx);
-    if (g->index.resolve(path)) return -EEXIST;
-    Node* n = g->index.create_file(path);
-    if (!n) return -ENOENT;
-    auto h = std::make_unique<WriteHandle>();
-    h->path = path;
-    h->node = n;
-    h->fd   = make_temp();
-    if (!h->fd.valid()) return -EIO;
-    n->writing = h.get();
-    const uint64_t id = g->next_h++;
-    g->writers.emplace(id, std::move(h));
-    fi->fh = id;
-    return 0;
-}
+    inline static void flush_data()
+    {
+        std::lock_guard<std::mutex> lk(g->mtx);
+        if (g->index.dirty())
+            flush_index();
+        g->cache.clear();
+        g->writers.clear();
+    }
 
-int t_write(const char*, const char* buf, size_t size, off_t off, struct fuse_file_info* fi) {
-    std::lock_guard<std::mutex> lk(g->mtx);
-    auto it = g->writers.find(fi->fh);
-    if (it == g->writers.end()) return -EBADF;
-    WriteHandle* h = it->second.get();
-    if (static_cast<uint64_t>(off) != h->pos) return -EINVAL;  // sequential only: no partial writes
-    const ssize_t w = pwrite(h->fd.get(), buf, size, off);
-    if (w < 0) return -errno;
-    h->sha.update(buf, static_cast<size_t>(w));
-    h->pos += static_cast<uint64_t>(w);
-    if (h->node) h->node->size = h->pos;
-    return static_cast<int>(w);
-}
-
-int t_truncate(const char* path, off_t size, struct fuse_file_info*) {
-    std::lock_guard<std::mutex> lk(g->mtx);
-    Node* n = g->index.resolve(path);
-    if (!n) return -ENOENT;
-    if (n->is_dir) return -EISDIR;
-    if (n->writing && size == 0 && n->writing->pos == 0) return 0;
-    if (n->writing && static_cast<uint64_t>(size) == n->writing->pos) return 0;
-    return -EPERM;
-}
-
-int t_read(const char* path, char* buf, size_t size, off_t offset, struct fuse_file_info*) {
-    std::lock_guard<std::mutex> lk(g->mtx);
-    Node* n = g->index.resolve(path);
-    if (!n) return -ENOENT;
-    if (n->is_dir) return -EISDIR;
-
-    int fd;
-    uint64_t fsize;
-    if (n->writing)      { fd = n->writing->fd.get(); fsize = n->size; }
-    else if (n->staged)  { fd = n->staged->fd.get();  fsize = n->staged->size; }
-    else {
-        auto it = g->cache.find(path);
-        if (it == g->cache.end()) {
-            Fd nf; uint64_t nsz;
-            if (!g->tape->read_member(n->data_tape_file, n->block_factor, member_name(path), nf, nsz))
-                return -EIO;
-            it = g->cache.emplace(path, CacheEntry{std::move(nf), nsz}).first;
+    void t_destroy(void *)
+    {
+        if (g)
+        {
+            flush_data();
         }
-        fd = it->second.fd.get();
-        fsize = it->second.size;
     }
 
-    if (static_cast<uint64_t>(offset) >= fsize) return 0;
-    size_t want = size;
-    if (static_cast<uint64_t>(offset) + want > fsize)
-        want = static_cast<size_t>(fsize - static_cast<uint64_t>(offset));
-    const ssize_t r = pread(fd, buf, want, offset);
-    return r < 0 ? -errno : static_cast<int>(r);
-}
-
-int t_release(const char*, struct fuse_file_info* fi) {
-    std::lock_guard<std::mutex> lk(g->mtx);
-    auto it = g->writers.find(fi->fh);
-    if (it == g->writers.end()) return 0;
-    WriteHandle* h = it->second.get();
-    if (h->node) {
-        h->node->sha256 = h->sha.hex();
-        h->node->size   = h->pos;
-        auto st = std::make_shared<Staged>();
-        st->size = h->pos;
-        st->fd   = std::move(h->fd);
-        h->node->staged  = std::move(st);
-        h->node->writing = nullptr;
+    int t_getattr(const char *path, struct stat *st, struct fuse_file_info *)
+    {
+        std::lock_guard<std::mutex> lk(g->mtx);
+        const Node *n = g->index.resolve(path);
+        if (!n)
+            return -ENOENT;
+        fill_stat(n, st);
+        return 0;
     }
-    g->writers.erase(it);
-    g->index.mark_dirty();
-    return 0;
-}
 
-int t_unlink(const char* path) {
-    std::lock_guard<std::mutex> lk(g->mtx);
-    g->cache.erase(path);
-    return g->index.unlink_file(path) ? 0 : -ENOENT;
-}
+    int t_readdir(const char *path, void *buf, fuse_fill_dir_t filler,
+                  off_t, struct fuse_file_info *, enum fuse_readdir_flags)
+    {
+        std::lock_guard<std::mutex> lk(g->mtx);
+        const Node *n = g->index.resolve(path);
+        if (!n)
+            return -ENOENT;
+        if (!n->is_dir)
+            return -ENOTDIR;
+        filler(buf, ".", nullptr, 0, static_cast<fuse_fill_dir_flags>(0));
+        filler(buf, "..", nullptr, 0, static_cast<fuse_fill_dir_flags>(0));
+        for (const auto &[name, child] : n->children)
+        {
+            struct stat st;
+            fill_stat(child.get(), &st);
+            filler(buf, name.c_str(), &st, 0, FUSE_FILL_DIR_PLUS);
+        }
+        return 0;
+    }
 
-int t_mkdir(const char* path, mode_t) {
-    std::lock_guard<std::mutex> lk(g->mtx);
-    if (g->index.resolve(path)) return -EEXIST;
-    return g->index.make_dir(path) ? 0 : -ENOENT;
-}
+    int t_open(const char *path, struct fuse_file_info *fi)
+    {
+        std::lock_guard<std::mutex> lk(g->mtx);
+        const Node *n = g->index.resolve(path);
+        if (!n)
+            return -ENOENT;
+        if (n->is_dir)
+            return -EISDIR;
+        if ((fi->flags & O_ACCMODE) != O_RDONLY)
+            return -EPERM; // sealed: read-or-delete only
+        fi->fh = 0;
+        return 0;
+    }
 
-int t_rmdir(const char* path) {
-    std::lock_guard<std::mutex> lk(g->mtx);
-    const Node* n = g->index.resolve(path);
-    if (!n) return -ENOENT;
-    if (!n->is_dir) return -ENOTDIR;
-    if (!n->children.empty()) return -ENOTEMPTY;
-    return g->index.remove_dir(path) ? 0 : -ENOTEMPTY;
-}
+    int t_create(const char *path, mode_t, struct fuse_file_info *fi)
+    {
+        std::lock_guard<std::mutex> lk(g->mtx);
+        if (g->index.resolve(path))
+            return -EEXIST;
+        Node *n = g->index.create_file(path);
+        if (!n)
+            return -ENOENT;
+        auto h = std::make_unique<WriteHandle>();
+        h->path = path;
+        h->node = n;
+        h->fd = make_temp();
+        if (!h->fd.valid())
+            return -EIO;
+        n->writing = h.get();
+        const uint64_t id = g->next_h++;
+        g->writers.emplace(id, std::move(h));
+        fi->fh = id;
+        return 0;
+    }
 
-const struct fuse_operations tapir_ops = {
-    .getattr  = t_getattr,
-    .mkdir    = t_mkdir,
-    .unlink   = t_unlink,
-    .rmdir    = t_rmdir,
-    .truncate = t_truncate,
-    .open     = t_open,
-    .read     = t_read,
-    .write    = t_write,
-    .release  = t_release,
-    .readdir  = t_readdir,
-    .init     = t_init,
-    .destroy  = t_destroy,
-    .create   = t_create,
-};
+    int t_write(const char *, const char *buf, size_t size, off_t off, struct fuse_file_info *fi)
+    {
+        std::lock_guard<std::mutex> lk(g->mtx);
+        auto it = g->writers.find(fi->fh);
+        if (it == g->writers.end())
+            return -EBADF;
+        WriteHandle *h = it->second.get();
+        if (static_cast<uint64_t>(off) != h->pos)
+            return -EINVAL; // sequential only: no partial writes
+        const ssize_t w = pwrite(h->fd.get(), buf, size, off);
+        if (w < 0)
+            return -errno;
+        h->sha.update(buf, static_cast<size_t>(w));
+        h->pos += static_cast<uint64_t>(w);
+        if (h->node)
+            h->node->size = h->pos;
+        return static_cast<int>(w);
+    }
+
+    int t_truncate(const char *path, off_t size, struct fuse_file_info *)
+    {
+        std::lock_guard<std::mutex> lk(g->mtx);
+        Node *n = g->index.resolve(path);
+
+        if (!n)
+            return -ENOENT;
+        if (n->is_dir)
+            return -EISDIR;
+        if (n->writing && size == 0 && n->writing->pos == 0)
+            return 0;
+        if (n->writing && static_cast<uint64_t>(size) == n->writing->pos)
+            return 0;
+        return -EPERM;
+    }
+
+    int t_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *)
+    {
+        std::lock_guard<std::mutex> lk(g->mtx);
+        Node *n = g->index.resolve(path);
+        if (!n)
+            return -ENOENT;
+        if (n->is_dir)
+            return -EISDIR;
+
+        int fd;
+        uint64_t fsize;
+        if (n->writing)
+        {
+            fd = n->writing->fd.get();
+            fsize = n->size;
+        }
+        else if (n->staged)
+        {
+            fd = n->staged->fd.get();
+            fsize = n->staged->size;
+        }
+        else
+        {
+            auto it = g->cache.find(path);
+            if (it == g->cache.end())
+            {
+                Fd nf;
+                uint64_t nsz;
+                if (!g->tape->read_member(n->data_tape_file, n->block_factor, member_name(path), nf, nsz))
+                    return -EIO;
+                it = g->cache.emplace(path, CacheEntry{std::move(nf), nsz}).first;
+            }
+            fd = it->second.fd.get();
+            fsize = it->second.size;
+        }
+
+        if (static_cast<uint64_t>(offset) >= fsize)
+            return 0;
+        size_t want = size;
+        if (static_cast<uint64_t>(offset) + want > fsize)
+            want = static_cast<size_t>(fsize - static_cast<uint64_t>(offset));
+        const ssize_t r = pread(fd, buf, want, offset);
+        return r < 0 ? -errno : static_cast<int>(r);
+    }
+
+    // Closing a file
+    // TODO: make 0 size files index only to allow adding data to them later.
+    // Alternatively make them 0 size file in the tar+index and show them as writable
+    // and when writing, adds a new entry to the underlaying tar file (and updat the index) that would overwrite the 0 sized one if raw tar is used to extract
+    int t_release(const char *, struct fuse_file_info *fi)
+    {
+        std::lock_guard<std::mutex> lk(g->mtx);
+        auto it = g->writers.find(fi->fh);
+        if (it == g->writers.end())
+            return 0;
+        WriteHandle *h = it->second.get();
+        if (h->node)
+        {
+            h->node->sha256 = h->sha.hex();
+            h->node->size = h->pos;
+            auto st = std::make_shared<Staged>();
+            st->size = h->pos;
+            st->fd = std::move(h->fd);
+            h->node->staged = std::move(st);
+            h->node->writing = nullptr;
+        }
+        g->writers.erase(it);
+        g->index.mark_dirty();
+        return 0;
+    }
+
+    // Delete file
+    int t_unlink(const char *path)
+    {
+        std::lock_guard<std::mutex> lk(g->mtx);
+        g->cache.erase(path);
+        return g->index.unlink_file(path) ? 0 : -ENOENT;
+    }
+
+    // Create folder
+    int t_mkdir(const char *path, mode_t)
+    {
+        std::lock_guard<std::mutex> lk(g->mtx);
+        if (g->index.resolve(path))
+            return -EEXIST;
+        return g->index.make_dir(path) ? 0 : -ENOENT;
+    }
+
+    // Delete folder
+    int t_rmdir(const char *path)
+    {
+        std::lock_guard<std::mutex> lk(g->mtx);
+        const Node *n = g->index.resolve(path);
+        if (!n)
+            return -ENOENT;
+        if (!n->is_dir)
+            return -ENOTDIR;
+        if (!n->children.empty())
+            return -ENOTEMPTY;
+        return g->index.remove_dir(path) ? 0 : -ENOTEMPTY;
+    }
+
+    // TODO can this be a constexpr?
+    const struct fuse_operations tapir_ops = {
+        .getattr = t_getattr,
+        .mkdir = t_mkdir,
+        .unlink = t_unlink,
+        .rmdir = t_rmdir,
+        .truncate = t_truncate,
+        .open = t_open,
+        .read = t_read,
+        .write = t_write,
+        .release = t_release,
+        .readdir = t_readdir,
+        .init = t_init,
+        .destroy = t_destroy,
+        .create = t_create,
+    };
 
 } // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char **argv)
+{
     std::setlocale(LC_ALL, "");
 
     std::string device;
     int bf = 512;
-    std::vector<char*> fargs;
+    std::vector<char *> fargs;
     fargs.push_back(argv[0]);
-    for (int i = 1; i < argc; ++i) {
+    for (int i = 1; i < argc; ++i)
+    {
         const std::string a = argv[i];
-        if ((a == "-b" || a == "--block-factor") && i + 1 < argc) { bf = std::atoi(argv[++i]); continue; }
-        if (device.empty() && !a.empty() && a[0] != '-') { device = a; continue; }
-        fargs.push_back(argv[i]);   // mountpoint + fuse options
+        if ((a == "-b" || a == "--block-factor") && i + 1 < argc)
+        {
+            bf = std::atoi(argv[++i]);
+            continue;
+        }
+        if (device.empty() && !a.empty() && a[0] != '-')
+        {
+            device = a;
+            continue;
+        }
+        fargs.push_back(argv[i]); // mountpoint + fuse options
     }
-    if (device.empty() || fargs.size() < 2) {
+    if (device.empty() || fargs.size() < 2)
+    {
         std::fprintf(stderr,
-            "tapir — read/append/delete FUSE mount of a tar tape archive\n"
-            "usage: %s <tape-device> <mountpoint> [-b N] [fuse options]\n", argv[0]);
+                     "tapir — read/append/delete FUSE mount of a tar tape archive\n"
+                     "usage: %s <tape-device> <mountpoint> [-b N] [fuse options]\n",
+                     argv[0]);
         return 2;
     }
-    if (device.rfind("/dev/", 0) != 0) {
+    if (device.rfind("/dev/", 0) != 0)
+    {
         std::fprintf(stderr, "tapir: expected a tape device (…-nst), got %s\n", device.c_str());
         return 2;
     }
@@ -336,18 +438,22 @@ int main(int argc, char** argv) {
     static State st;
     st.block_factor = bf;
     st.tape = std::make_unique<Tape>(device, bf);
-    st.uid   = geteuid();
-    st.gid   = getegid();
+    st.uid = geteuid();
+    st.gid = getegid();
     st.mtime = time(nullptr);
 
     std::string manifest_json;
-    if (!st.tape->read_latest_manifest(manifest_json)) {
+    if (!st.tape->read_latest_manifest(manifest_json))
+    {
         std::fprintf(stderr, "tapir: could not read a manifest from %s\n", device.c_str());
         return 1;
     }
-    try {
+    try
+    {
         st.index.load(manifest_json);
-    } catch (const std::exception& ex) {
+    }
+    catch (const std::exception &ex)
+    {
         std::fprintf(stderr, "tapir: %s\n", ex.what());
         return 1;
     }
