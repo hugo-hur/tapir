@@ -40,8 +40,11 @@ config.cache
 *.o
 *.lo
 *.la
+*.a
 .libs/
 /src/tapir
+/src/tfsck
+/src/mktapir
 
 # ── editor / misc ─────────────────────────────────────────────────────────────
 *~
