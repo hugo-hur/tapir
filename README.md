@@ -1,12 +1,14 @@
 # tapir (TApe Physical-Index aRchive)
 
-A FUSE filesystem and tools for easily browsing/appending to a **tar tape archive** a
-data tar at tape file N + a cumulative `manifest.json` index tar after it.
-Metadata (`ls`, `stat`) is served from the in-RAM
-index; content is read back through libarchive on demand and cached.
+A FUSE filesystem and tools for easily browsing/appending to a **tar tape archive**:
+a data tar at tape file N + a cumulative `manifest.json` index tar after it.
+Metadata (`ls`, `stat`) is served from the in-RAM index; content is read back
+through libarchive on demand and cached.
 
-This project is inspired from LTFS project, which is an self describing indexed filesystem on partitioned tapes.
-Unlike LTFS tapir simplifies file handling into tar operations in tape with separate index files and allows using it on non partitioned tapes (including LTO WORM).
+This project is inspired by the LTFS project, which is a self-describing indexed
+filesystem on partitioned tapes. Unlike LTFS, tapir simplifies file handling into
+tar operations on tape with separate index files, and works on non-partitioned
+tapes (including LTO WORM).
 
 Built around a shared static library, **libtapir** (cf. LTFS's `libltfs`):
 
@@ -17,9 +19,9 @@ Built around a shared static library, **libtapir** (cf. LTFS's `libltfs`):
   block factor), recomputes SHA-256 and checks it against the index
   (deleted-but-retained members are reported as *orphans*, not failures).
 - **`mktapir`** — build/convert the index.
-  - `import` scans an existing tar already at a given tape file + block factor and
-    adds its members to the index — run once per data tape file to make a
-    pre-existing (non-tapir) tape tapir-compatible.
+  - `import` scans existing tar tape files (no `-f` = the whole tape; or `-f` with a
+    comma-list of tape files) and adds their members to the index, auto-detecting
+    each file's block factor — converts a pre-existing (non-tapir) tape in one go.
   - `append` re-streams a tar from disk into a new tape file at EOD and indexes it.
 
   Each archive's block factor is stored per-archive in the manifest, so tapes
@@ -42,7 +44,7 @@ coordinates are the next step for faster random access.
 ### Installing the dependencies to build this project (Debian/Ubuntu)
 
 ```sh
-sudo apt-get build-essential install libarchive-dev libfuse3-dev fuse3 nlohmann-json3-dev libssl-dev
+sudo apt-get install build-essential libarchive-dev libfuse3-dev fuse3 nlohmann-json3-dev libssl-dev
 ```
 
 Tape positioning uses the Linux `st` driver ioctls (`<sys/mtio.h>`) directly, so
@@ -71,9 +73,10 @@ fusermount3 -u <mountpoint>      # unmount → writes a fresh index to tape if a
 # verify a tape against its manifest
 ./src/tfsck /dev/tape/by-id/scsi-XXXX-nst [-b N]
 
-# allows for converting an existing (non-tapir) tape: index each data tape file with its block factor
-# requires space at the end of the tape for the small index file
-./src/mktapir import /dev/tape/by-id/scsi-XXXX-nst -f <tape-file> -b <block-factor>
+# convert an existing (non-tapir) tape: index its tar archive(s) and write a manifest at EOD.
+# no -f scans the whole tape (block size auto-detected); -f takes a comma-list of tape files.
+# requires free space at the end of the tape for the small index file.
+./src/mktapir import /dev/tape/by-id/scsi-XXXX-nst [-f 0,2,5] [-b <block-factor-override>]
 
 # append a tar from disk into a new tape file and add to index
 ./src/mktapir append /dev/tape/by-id/scsi-XXXX-nst /path/to/file.tar -b <block-factor>
