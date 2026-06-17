@@ -89,6 +89,7 @@ namespace tapir
             archive_entry_set_size(e.get(), static_cast<la_int64_t>(f.size));
             archive_entry_set_filetype(e.get(), AE_IFREG);
             archive_entry_set_perm(e.get(), kFileMode);
+            archive_entry_set_mtime(e.get(), f.mtime ? f.mtime : std::time(nullptr), 0);
             if (archive_write_header(a, e.get()) != ARCHIVE_OK)
                 return false;
             off_t off = 0;

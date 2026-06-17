@@ -10,6 +10,7 @@
 #include "raii.hpp"
 
 #include <cstdint>
+#include <ctime>
 #include <functional>
 #include <string>
 #include <vector>
@@ -25,6 +26,7 @@ namespace tapir
         std::string name; // member name (full relpath, no leading '/')
         int fd;           // borrowed readable fd
         uint64_t size;
+        time_t mtime = 0; // tar header mtime (0 → current time)
     };
 
     // Read a whole member into memory (e.g. manifest.json).

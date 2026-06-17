@@ -130,7 +130,7 @@ namespace
                 if (child->is_dir)
                     walk(child.get(), p);
                 else if (child->staged)
-                    staged.push_back({p, child->staged->fd.get(), child->staged->size});
+                    staged.push_back({p, child->staged->fd.get(), child->staged->size, child->staged->mtime});
             }
         };
         walk(g->index.root(), "");
@@ -344,6 +344,7 @@ namespace
             h->node->size = h->pos;
             auto st = std::make_shared<Staged>();
             st->size = h->pos;
+            st->mtime = std::time(nullptr); // default to write time; overridable via utimens
             st->fd = std::move(h->fd);
             h->node->staged = std::move(st);
             h->node->writing = nullptr;
@@ -384,6 +385,24 @@ namespace
         return g->index.remove_dir(path) ? 0 : -ENOTEMPTY;
     }
 
+    // mv(1) calls utimensat() after writing to restore the source file's timestamps.
+    // We don't store per-node timestamps (the tar header records write time), so
+    // accept silently for staged/writing nodes. Sealed on-tape files are immutable.
+    static int t_utimens(const char *path, const struct timespec tv[2],
+                         struct fuse_file_info *)
+    {
+        std::lock_guard<std::mutex> lk(g->mtx);
+        Node *n = g->index.resolve(path);
+        if (!n)
+            return -ENOENT;
+        if (!n->is_dir && !n->staged && !n->writing)
+            return -EPERM; // sealed on-tape file: truly immutable
+        // tv[1] is the mtime requested (tv[0] is atime, which we don't store).
+        if (n->staged && tv)
+            n->staged->mtime = tv[1].tv_sec;
+        return 0;
+    }
+
     // TODO can this be a constexpr?
     const struct fuse_operations tapir_ops = {
         .getattr = t_getattr,
@@ -399,6 +418,7 @@ namespace
         .init = t_init,
         .destroy = t_destroy,
         .create = t_create,
+        .utimens = t_utimens,
     };
 
 } // namespace

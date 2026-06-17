@@ -12,6 +12,7 @@
 #include "raii.hpp"
 
 #include <cstdint>
+#include <ctime>
 #include <map>
 #include <memory>
 #include <string>
@@ -27,6 +28,7 @@ namespace tapir
     {
         Fd fd;
         uint64_t size = 0;
+        time_t mtime = 0; // user-visible mtime; written into the tar header at unmount
     };
 
     struct Node
