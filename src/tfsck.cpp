@@ -79,6 +79,9 @@ int main(int argc, char **argv)
     }
 
     std::printf("=== tfsck %s ===\n", device.c_str());
+    if (!index.volume_uuid().empty())
+        std::printf("  volume %s, write-generation %llu\n",
+                    index.volume_uuid().c_str(), static_cast<unsigned long long>(index.latest_generation()));
     int failures = 0, orphans = 0, verified = 0;
 
     for (auto &[dtf, want] : expected)

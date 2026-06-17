@@ -1,13 +1,13 @@
 // mktapir.cpp — build / convert the tapir index on a tape (cf. mkltfs).
 //
-//   mktapir import <device> -f <tape-file> -b <block-factor> [-m <manifest-bf>]
+//   mktapir import <device> [-f <tape-files>] [-b <block-factor>] [-m <manifest-bf>]
 //
-// Scans an existing tar at tape file N (read with blocking factor B), computes
-// each member's SHA-256, and adds them to the index recording (N, B). This is the
-// building block for converting pre-existing, non-tapir tapes — whose data tars
-// may each use a different blocking factor — into tapir-compatible ones: run it
-// once per data tape file with that file's -b. An updated manifest is written at
-// the end of the tape; existing data is never rewritten.
+// Scans existing tar tape files, computes each member's SHA-256, and adds them to
+// the index recording each archive's tape file + (auto-detected) block factor.
+// With no -f it scans the whole tape (every data file; manifest files skipped),
+// converting a pre-existing, non-tapir tape — whose data tars may each use a
+// different blocking factor — in a single command. An updated manifest is written
+// at end of tape; existing data is never rewritten.
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE 1
@@ -34,68 +34,132 @@
 
 using namespace tapir;
 
-static int do_import(const std::string &dev, int tape_file, int bf_hint, int mbf)
+// import: index existing tar tape files. `files` empty → every data tape file.
+// Block size is auto-detected per file; bf_hint (-b) is only a fallback/override.
+static int do_import(const std::string &dev, const std::vector<int> &files, int bf_hint, int mbf)
 {
     Tape tape(dev, mbf);
 
-    // Auto-detect the data archive's block size; -b (bf_hint) is only an override.
-    int bf = bf_hint;
-    const int probed = tape.probe_block_size(tape_file);
-    if (probed > 0)
+    // One forward survey: how many tape files, and is the tape full?
+    bool full = false;
+    const int count = tape.survey(full);
+    if (count < 0)
     {
-        const int probed_bf = (probed + 511) / 512; // round up so the read buffer ≥ block
-        if (bf_hint > 0 && bf_hint != probed_bf)
-            std::fprintf(stderr, "mktapir: WARNING: -b %d disagrees with detected %d bytes "
-                                 "(block factor %d); using detected\n",
-                         bf_hint, probed, probed_bf);
-        bf = probed_bf;
-        std::fprintf(stderr, "mktapir: tape file %d block size = %d bytes (block factor %d)\n",
-                     tape_file, probed, bf);
+        std::fprintf(stderr, "mktapir: cannot read tape %s\n", dev.c_str());
+        return 1;
     }
-    else if (bf_hint > 0)
+    if (full)
     {
-        std::fprintf(stderr, "mktapir: could not auto-detect block size; using -b %d\n", bf_hint);
-    }
-    else
-    {
-        std::fprintf(stderr, "mktapir: could not detect block size at tape file %d; pass -b\n", tape_file);
+        std::fprintf(stderr, "mktapir: tape is full — no room to write the index. A tar that\n"
+                             "         spans multiple tapes is not supported; refusing.\n");
         return 1;
     }
 
+    // An explicit -f list adds to the existing index; a full scan (no -f) rebuilds
+    // from everything on the tape, so it skips loading the old manifest entirely.
     Index idx;
-    std::string manifest;
-    if (tape.read_latest_manifest(manifest))
+    if (!files.empty())
     {
-        try
+        std::string manifest;
+        if (tape.read_latest_manifest(manifest))
         {
-            idx.load(manifest);
-            std::fprintf(stderr, "mktapir: loaded existing index (%zu file(s))\n", idx.flat().size());
+            try
+            {
+                idx.load(manifest);
+                std::fprintf(stderr, "mktapir: loaded existing index (%zu file(s))\n", idx.flat().size());
+            }
+            catch (const std::exception &ex)
+            {
+                std::fprintf(stderr, "mktapir: existing manifest unreadable (%s); starting fresh\n", ex.what());
+            }
         }
-        catch (const std::exception &ex)
+        else
         {
-            std::fprintf(stderr, "mktapir: existing manifest unreadable (%s); starting fresh\n", ex.what());
+            std::fprintf(stderr, "mktapir: no existing manifest; starting fresh\n");
         }
     }
     else
     {
-        std::fprintf(stderr, "mktapir: no existing manifest; starting a new index\n");
+        std::fprintf(stderr, "mktapir: building a new index from all data on the tape\n");
     }
 
-    int added = 0;
-    const bool ok = tape.scan_archive(
-        tape_file, bf,
-        [&](const std::string &name, const std::string &sha, uint64_t size)
-        {
-            idx.add_file(name, size, sha, tape_file, bf);
-            ++added;
-        });
-    if (!ok)
+    // Default target set: every tape file. Manifest tape files are skipped
+    // automatically (their sole member is manifest.json).
+    std::vector<int> targets = files;
+    if (targets.empty())
+        for (int f = 0; f < count; ++f)
+            targets.push_back(f);
+
+    int total = 0, skipped = 0, incomplete = 0;
+    for (const int f : targets)
     {
-        std::fprintf(stderr, "mktapir: failed to scan tape file %d (block factor %d)\n", tape_file, bf);
+        if (f >= count)
+        {
+            std::fprintf(stderr, "mktapir: tape file %d is past end-of-data (%d files); skipping\n", f, count);
+            continue;
+        }
+        int detected = 0;
+        std::vector<std::tuple<std::string, std::string, uint64_t>> members;
+        const bool ok = tape.scan_archive_detect(
+            f, detected,
+            [&](const std::string &name, const std::string &sha, uint64_t size)
+            {
+                if (name == "manifest.json")
+                    return; // index file, not data
+                members.emplace_back(name, sha, size);
+            });
+        if (!ok && members.empty())
+        {
+            // Nothing parsed: no valid tar header at the file's start — the tail of
+            // an archive spanned from a previous tape, or corrupt. Disregard it.
+            std::fprintf(stderr,
+                         "mktapir: WARNING: tape file %d has no valid tar header at its start\n"
+                         "         (a continuation from another tape, or corrupt); skipping it.\n",
+                         f);
+            ++skipped;
+            continue;
+        }
+        if (!ok)
+        {
+            // Parsed some complete members, then hit an error: the archive is
+            // incomplete — truncated, or it continues on another tape. Keep the
+            // complete members; the cut-off trailing one is disregarded.
+            std::fprintf(stderr,
+                         "mktapir: WARNING: tape file %d is incomplete (truncated, or it continues on\n"
+                         "         another tape) — indexing the %zu complete member(s) before the cut.\n",
+                         f, members.size());
+            ++incomplete;
+        }
+        if (members.empty())
+            continue; // a manifest tape file (its sole member was skipped)
+
+        const int detected_bf = detected > 0 ? (detected + 511) / 512 : 0;
+        const int bf = detected_bf > 0 ? detected_bf : bf_hint;
+        if (bf <= 0)
+        {
+            std::fprintf(stderr, "mktapir: could not detect block size at tape file %d; pass -b\n", f);
+            continue;
+        }
+        if (bf_hint > 0 && detected_bf > 0 && bf_hint != detected_bf)
+            std::fprintf(stderr, "mktapir: WARNING: -b %d disagrees with detected block factor %d "
+                                 "at tape file %d; using detected\n",
+                         bf_hint, detected_bf, f);
+
+        for (const auto &[name, sha, size] : members)
+            idx.add_file(name, size, sha, f, bf);
+        total += static_cast<int>(members.size());
+        std::fprintf(stderr, "mktapir: tape file %d: %zu file(s), block size %d bytes (factor %d)\n",
+                     f, members.size(), detected, bf);
+    }
+
+    if (skipped || incomplete)
+        std::fprintf(stderr, "mktapir: %d tape file(s) skipped, %d incomplete\n", skipped, incomplete);
+
+    if (total == 0)
+    {
+        std::fprintf(stderr, "mktapir: nothing to index\n");
         return 1;
     }
-    std::fprintf(stderr, "mktapir: indexed %d member(s) from tape file %d (block factor %d)\n",
-                 added, tape_file, bf);
 
     int dtf = 0;
     if (!tape.append(mbf, nullptr, [&](int)
@@ -104,7 +168,10 @@ static int do_import(const std::string &dev, int tape_file, int bf_hint, int mbf
         std::fprintf(stderr, "mktapir: failed to write updated manifest\n");
         return 1;
     }
-    std::fprintf(stderr, "mktapir: wrote updated index to end of tape\n");
+    std::fprintf(stderr, "mktapir: indexed %d file(s) across %zu tape file(s); wrote index at end of tape\n",
+                 total, targets.size());
+    std::fprintf(stderr, "mktapir: volume %s, write-generation %llu\n",
+                 idx.volume_uuid().c_str(), static_cast<unsigned long long>(idx.latest_generation()));
     return 0;
 }
 
@@ -167,6 +234,8 @@ static int do_append(const std::string &dev, const std::string &tarpath, int bf,
     }
     std::fprintf(stderr, "mktapir: appended %zu file(s) from %s as tape file %d; index updated\n",
                  collected.size(), tarpath.c_str(), dtf);
+    std::fprintf(stderr, "mktapir: volume %s, write-generation %llu\n",
+                 idx.volume_uuid().c_str(), static_cast<unsigned long long>(idx.latest_generation()));
     return 0;
 }
 
@@ -175,11 +244,11 @@ static void usage(const char *argv0)
     std::fprintf(stderr,
                  "mktapir — build/convert the tapir index on a tape\n"
                  "usage:\n"
-                 "  %s import <tape-device> -f <tape-file> [-b <block-factor>] [-m <manifest-bf>]\n"
-                 "      Scan the existing tar at tape file N and add its members to the index,\n"
-                 "      then write an updated manifest at end of tape. The block size is\n"
-                 "      auto-detected; pass -b only to override. Run once per data tape file\n"
-                 "      to convert a non-tapir tape.\n"
+                 "  %s import <tape-device> [-f <tape-files>] [-b <block-factor>] [-m <manifest-bf>]\n"
+                 "      Index existing tar tape files and write an updated manifest at end of\n"
+                 "      tape. With no -f, scans every data tape file (manifest files are\n"
+                 "      skipped); -f takes a comma-separated list (e.g. -f 0,2,5). The block\n"
+                 "      size is auto-detected per file; -b is only a fallback/override.\n"
                  "  %s append <tape-device> <file.tar> [-b <block-factor>] [-m <manifest-bf>]\n"
                  "      Re-stream a tar from disk into a new tape file at EOD and add its\n"
                  "      contents to the index.\n",
@@ -193,23 +262,37 @@ int main(int argc, char **argv)
     if (argc >= 3 && std::strcmp(argv[1], "import") == 0)
     {
         const std::string dev = argv[2];
-        int tape_file = -1, bf = 0 /* 0 = auto-detect */, mbf = 512;
+        std::vector<int> files; // empty → all data tape files
+        int bf = 0 /* 0 = auto-detect */, mbf = 512;
         for (int i = 3; i < argc; ++i)
         {
             const std::string a = argv[i];
             if ((a == "-f" || a == "--tape-file") && i + 1 < argc)
-                tape_file = std::atoi(argv[++i]);
+            {
+                // comma-separated list, e.g. -f 0,2,5 (repeatable)
+                const std::string v = argv[++i];
+                for (std::size_t p = 0; p < v.size();)
+                {
+                    const std::size_t c = v.find(',', p);
+                    const std::string tok = v.substr(p, c == std::string::npos ? c : c - p);
+                    if (!tok.empty())
+                        files.push_back(std::atoi(tok.c_str()));
+                    if (c == std::string::npos)
+                        break;
+                    p = c + 1;
+                }
+            }
             else if ((a == "-b" || a == "--block-factor") && i + 1 < argc)
                 bf = std::atoi(argv[++i]);
             else if ((a == "-m" || a == "--manifest-block-factor") && i + 1 < argc)
                 mbf = std::atoi(argv[++i]);
         }
-        if (dev.rfind("/dev/", 0) != 0 || tape_file < 0)
+        if (dev.rfind("/dev/", 0) != 0)
         {
             usage(argv[0]);
             return 2;
         }
-        return do_import(dev, tape_file, bf, mbf);
+        return do_import(dev, files, bf, mbf);
     }
 
     if (argc >= 4 && std::strcmp(argv[1], "append") == 0)
