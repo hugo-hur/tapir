@@ -7,9 +7,8 @@ namespace tapir::security
 {
     UuidV4::UuidV4(std::string_view input)
     {
-        if (s.size() != 36 || s[8] != '-' || s[13] != '-' || s[18] != '-' || s[23] != '-')
+        if (input.size() != 36 || input[8] != '-' || input[13] != '-' || input[18] != '-' || input[23] != '-')
             throw std::invalid_argument("invalid uuid format");
-        // TODO check if these two lambdas can instead use existing helpers in raai.hpp for example
         auto nib = [](char c) -> uint8_t
         {
             if (c >= '0' && c <= '9')
@@ -22,11 +21,11 @@ namespace tapir::security
         };
         auto byte_at = [&](int i) -> std::byte
         {
-            return std::byte((nib(s[i]) << 4) | nib(s[i + 1]));
+            return std::byte((nib(input[i]) << 4) | nib(input[i + 1]));
         };
 
         // positions of each hex pair, skipping dashes at 8,13,18,23
-        data = std::array<std::byte, 16>{{
+        bytes = std::array<std::byte, 16>{{
             byte_at(0),
             byte_at(2),
             byte_at(4),
@@ -48,16 +47,23 @@ namespace tapir::security
 
     UuidV4::UuidV4(std::array<std::byte, 16> input) : bytes(input)
     {
-        bytes[6] = (bytes[6] & 0x0F) | 0x40; // version 4
-        bytes[8] = (bytes[8] & 0x3F) | 0x80; // variant 1
+        bytes[6] = std::byte((std::to_integer<uint8_t>(bytes[6]) & 0x0F) | 0x40); // version 4
+        bytes[8] = std::byte((std::to_integer<uint8_t>(bytes[8]) & 0x3F) | 0x80); // variant 1
     }
+
     UuidV4::operator std::string() const
     {
         char s[37];
         std::snprintf(s, sizeof s,
                       "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-                      data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
-                      data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15]);
+                      std::to_integer<unsigned>(bytes[0]),  std::to_integer<unsigned>(bytes[1]),
+                      std::to_integer<unsigned>(bytes[2]),  std::to_integer<unsigned>(bytes[3]),
+                      std::to_integer<unsigned>(bytes[4]),  std::to_integer<unsigned>(bytes[5]),
+                      std::to_integer<unsigned>(bytes[6]),  std::to_integer<unsigned>(bytes[7]),
+                      std::to_integer<unsigned>(bytes[8]),  std::to_integer<unsigned>(bytes[9]),
+                      std::to_integer<unsigned>(bytes[10]), std::to_integer<unsigned>(bytes[11]),
+                      std::to_integer<unsigned>(bytes[12]), std::to_integer<unsigned>(bytes[13]),
+                      std::to_integer<unsigned>(bytes[14]), std::to_integer<unsigned>(bytes[15]));
         return std::string(s);
     }
 
@@ -73,7 +79,7 @@ namespace tapir::security
 
     std::string Sha256::hex() const
     {
-        EvpCtxPtr dup(EVP_MD_CTX_new()); // copy so the live context stays usable
+        std::unique_ptr<EVP_MD_CTX, EvpCtxDeleter> dup(EVP_MD_CTX_new()); // copy so the live context stays usable
         EVP_MD_CTX_copy_ex(dup.get(), ctx_.get());
         unsigned char md[EVP_MAX_MD_SIZE];
         unsigned int len = 0;
@@ -91,7 +97,7 @@ namespace tapir::security
     std::array<std::byte, 32> Sha256::Oneshot(const void *data, std::size_t n)
     {
         std::array<std::byte, 32> output;
-        EvpCtxPtr ctx(EVP_MD_CTX_new());
+        std::unique_ptr<EVP_MD_CTX, EvpCtxDeleter> ctx(EVP_MD_CTX_new());
         EVP_DigestInit_ex(ctx.get(), EVP_sha256(), nullptr);
         EVP_DigestUpdate(ctx.get(), data, n);
         unsigned int len = 0;
