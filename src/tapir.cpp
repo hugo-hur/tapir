@@ -24,6 +24,7 @@
 #include "index.hpp"
 #include "tape.hpp"
 #include "tar_io.hpp"
+#include "security.hpp"
 
 #include <cerrno>
 #include <clocale>
@@ -53,7 +54,7 @@ namespace tapir
         Node *node = nullptr; // non-owning: lives in the Index tree
         Fd fd;                // staging temp file (anonymous)
         uint64_t pos = 0;     // next expected (sequential) write offset
-        Sha256 sha;
+        security::Sha256 sha;
     };
 } // namespace tapir
 

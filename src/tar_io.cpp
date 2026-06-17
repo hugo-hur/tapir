@@ -1,4 +1,5 @@
 #include "tar_io.hpp"
+#include "security.hpp"
 
 #include <archive.h>
 #include <archive_entry.h>
@@ -144,7 +145,7 @@ namespace tapir
             if (archive_write_header(out, e) != ARCHIVE_OK)
                 return false;
             const bool is_file = archive_entry_filetype(e) == AE_IFREG && archive_entry_hardlink(e) == nullptr;
-            Sha256 sha;
+            security::Sha256 sha;
             uint64_t total = 0;
             const void *b;
             size_t n;
@@ -181,7 +182,7 @@ namespace tapir
                 archive_read_data_skip(a);
                 continue;
             }
-            Sha256 sha;
+            security::Sha256 sha;
             const void *b;
             size_t n;
             la_int64_t off;
