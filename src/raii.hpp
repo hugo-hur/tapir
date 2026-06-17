@@ -10,7 +10,7 @@
 
 #include <archive.h>
 #include <archive_entry.h>
-#include <openssl/evp.h>
+
 
 #include <cstddef>
 #include <cstdint>
@@ -110,39 +110,7 @@ namespace tapir
     using ArchiveReadPtr = std::unique_ptr<struct archive, ArchiveReadDeleter>;
     using ArchiveWritePtr = std::unique_ptr<struct archive, ArchiveWriteDeleter>;
     using ArchiveEntryPtr = std::unique_ptr<struct archive_entry, ArchiveEntryDeleter>;
-    using EvpCtxPtr = std::unique_ptr<EVP_MD_CTX, EvpCtxDeleter>;
-
-    // ── incremental SHA-256 ───────────────────────────────────────────────────────
-    class Sha256
-    {
-    public:
-        Sha256() : ctx_(EVP_MD_CTX_new())
-        {
-            EVP_DigestInit_ex(ctx_.get(), EVP_sha256(), nullptr);
-        }
-        void update(const void *p, std::size_t n) { EVP_DigestUpdate(ctx_.get(), p, n); }
-
-        std::string hex() const
-        {
-            EvpCtxPtr dup(EVP_MD_CTX_new()); // copy so the live context stays usable
-            EVP_MD_CTX_copy_ex(dup.get(), ctx_.get());
-            unsigned char md[EVP_MAX_MD_SIZE];
-            unsigned len = 0;
-            EVP_DigestFinal_ex(dup.get(), md, &len);
-            std::string out;
-            out.reserve(static_cast<std::size_t>(len) * 2);
-            for (unsigned i = 0; i < len; ++i)
-            {
-                out += hex_digit(md[i] >> 4);
-                out += hex_digit(md[i] & 0x0F);
-            }
-            return out;
-        }
-
-    private:
-        EvpCtxPtr ctx_;
-    };
-
+    
 } // namespace tapir
 
 #endif // TAPIR_RAII_HPP
