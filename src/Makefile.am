@@ -20,3 +20,11 @@ tfsck_LDADD    = libtapir.a $(LIBARCHIVE_LIBS) $(CRYPTO_LIBS)
 mktapir_SOURCES  = mktapir.cpp
 mktapir_CPPFLAGS = $(LIBARCHIVE_CFLAGS) $(JSON_CFLAGS) $(CRYPTO_CFLAGS)
 mktapir_LDADD    = libtapir.a $(LIBARCHIVE_LIBS) $(CRYPTO_LIBS)
+
+# Unit tests (make check)
+check_PROGRAMS   = test_security
+TESTS            = test_security
+
+test_security_SOURCES  = test_security.cpp
+test_security_CPPFLAGS = $(CRYPTO_CFLAGS)
+test_security_LDADD    = libtapir.a $(CRYPTO_LIBS)
