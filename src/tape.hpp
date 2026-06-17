@@ -98,6 +98,12 @@ namespace tapir
                     const std::function<std::string(int data_tape_file)> &make_manifest,
                     int &out_data_tape_file);
 
+        // Rewind to start of tape and write the manifest as tape file 0.
+        // Used by mktapir --force to logically reformat a tape. On WORM tapes
+        // this will be rejected by the drive if any data already exists.
+        bool overwrite_from_start(int block_factor,
+                                  const std::function<std::string()> &make_manifest);
+
     private:
         bool position_latest_manifest();
         bool position_data(int tape_file);

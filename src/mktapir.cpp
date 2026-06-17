@@ -196,6 +196,63 @@ static int do_import(const std::string &dev, const std::vector<int> &files, int 
     return 0;
 }
 
+// init: write a fresh empty tapir index on a blank (or force-overwritten) tape.
+static int do_init(const std::string &dev, int mbf, bool force)
+{
+    Tape tape(dev, mbf);
+
+    bool full = false;
+    const int count = tape.survey(full);
+    if (count < 0)
+    {
+        std::fprintf(stderr, "mktapir: cannot read tape %s\n", dev.c_str());
+        return 1;
+    }
+    if (full)
+    {
+        std::fprintf(stderr, "mktapir: tape is full — cannot write index\n");
+        return 1;
+    }
+
+    if (count > 0 && !force)
+    {
+        std::fprintf(stderr,
+                     "mktapir: tape already has %d file(s) — refusing to write a blank index.\n"
+                     "         Use --force to write a new empty index at end of tape anyway\n"
+                     "         (existing data stays on tape and is recoverable via tfsck or\n"
+                     "         'mktapir import -f'), or use 'mktapir import' to index it.\n",
+                     count);
+        return 1;
+    }
+
+    Index idx;
+    bool ok;
+    if (count > 0)
+    {
+        std::fprintf(stderr,
+                     "mktapir: WARNING: tape has %d existing file(s); rewinding and writing\n"
+                     "         blank index at start of tape. Existing data will be inaccessible\n"
+                     "         (on WORM tapes the drive will reject this write).\n",
+                     count);
+        ok = tape.overwrite_from_start(mbf, [&]() { return idx.serialize(-1, mbf); });
+    }
+    else
+    {
+        int dtf = 0;
+        ok = tape.append(mbf, nullptr, [&](int) { return idx.serialize(-1, mbf); }, dtf);
+    }
+    if (!ok)
+    {
+        std::fprintf(stderr, "mktapir: failed to write index\n");
+        return 1;
+    }
+    std::fprintf(stderr, "mktapir: initialised tape %s — volume %s, generation %llu\n",
+                 dev.c_str(),
+                 idx.volume_uuid().c_str(),
+                 static_cast<unsigned long long>(idx.latest_generation()));
+    return 0;
+}
+
 // append: re-stream a tar from disk into a new tape file at EOD and index it.
 static int do_append(const std::string &dev, const std::string &tarpath, int bf, int mbf, bool verbose)
 {
@@ -269,6 +326,11 @@ static void usage(const char *argv0)
     std::fprintf(stderr,
                  "mktapir — build/convert the tapir index on a tape\n"
                  "usage:\n"
+                 "  %s <tape-device> [-m <manifest-bf>] [--force]\n"
+                 "      Write a fresh empty tapir index on a blank tape. Refuses if the tape\n"
+                 "      already has files unless --force is given; --force rewinds to the\n"
+                 "      start of tape and overwrites with a blank index (on WORM tapes the\n"
+                 "      drive will reject this if data already exists).\n"
                  "  %s import <tape-device> [-f <tape-files>] [-b <block-factor>] [-m <manifest-bf>] [-v]\n"
                  "      Index existing tar tape files and write an updated manifest at end of\n"
                  "      tape. With no -f, scans every data tape file (manifest files are\n"
@@ -279,12 +341,30 @@ static void usage(const char *argv0)
                  "      contents to the index.\n"
                  "  -v / --verbose   log tape positioning and, per member, '<name> <size> <sha256>'\n"
                  "                   as each member's SHA-256 finishes.\n",
-                 argv0, argv0);
+                 argv0, argv0, argv0);
 }
 
 int main(int argc, char **argv)
 {
     std::setlocale(LC_ALL, "");
+
+    // Default command: mktapir <device> [--force] [-m N]
+    // Detected when the first argument looks like a device path.
+    if (argc >= 2 && std::string(argv[1]).rfind("/dev/", 0) == 0)
+    {
+        const std::string dev = argv[1];
+        int mbf = 512;
+        bool force = false;
+        for (int i = 2; i < argc; ++i)
+        {
+            const std::string a = argv[i];
+            if (a == "--force")
+                force = true;
+            else if ((a == "-m" || a == "--manifest-block-factor") && i + 1 < argc)
+                mbf = std::atoi(argv[++i]);
+        }
+        return do_init(dev, mbf, force);
+    }
 
     if (argc >= 3 && std::strcmp(argv[1], "import") == 0)
     {

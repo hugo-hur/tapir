@@ -275,4 +275,15 @@ namespace tapir
                                { return tar_write_member(a, "manifest.json", manifest); });
     }
 
+    bool Tape::overwrite_from_start(int block_factor,
+                                    const std::function<std::string()> &make_manifest)
+    {
+        if (!rewind())
+            return false;
+        const std::string manifest = make_manifest();
+        return write_tape_file(block_factor,
+                               [&](struct archive *a)
+                               { return tar_write_member(a, "manifest.json", manifest); });
+    }
+
 } // namespace tapir
