@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+// Copyright (C) 2026 Hugo Hurskainen
+
 // tfsck.cpp — verify and recovery tool for tapir tape archives.
 //
 // Three modes:

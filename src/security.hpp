@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+// Copyright (C) 2026 Hugo Hurskainen
+
 #ifndef TAPIR_SECURITY_HPP
 #define TAPIR_SECURITY_HPP
 

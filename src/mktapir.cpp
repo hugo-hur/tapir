@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+// Copyright (C) 2026 Hugo Hurskainen
+
 // mktapir.cpp — build / convert the tapir index on a tape (cf. mkltfs).
 //
 //   mktapir import <device> [-f <tape-files>] [-b <block-factor>] [-m <manifest-bf>]

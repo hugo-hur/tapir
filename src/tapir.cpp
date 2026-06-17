@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+// Copyright (C) 2026 Hugo Hurskainen
+
 // tapir.cpp — read/append/delete FUSE3 mount of a tar *tape* archive.
 //
 // Metadata is served from the in-RAM Index (read from the latest manifest tape

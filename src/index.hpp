@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+// Copyright (C) 2026 Hugo Hurskainen
+
 // index.hpp — the mutable in-memory index (directory tree) for a tape archive.
 //
 // Single source of truth: nodes own their children via unique_ptr; serialising

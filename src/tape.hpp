@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+// Copyright (C) 2026 Hugo Hurskainen
+
 // tape.hpp — tape positioning + tape-file tar I/O on the no-rewind device.
 //
 // Uses the Linux st-driver ioctls for positioning and libarchive (block-aligned)

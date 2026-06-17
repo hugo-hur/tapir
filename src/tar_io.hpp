@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+// Copyright (C) 2026 Hugo Hurskainen
+
 // tar_io.hpp — libarchive helpers over an *already-opened* archive handle.
 //
 // These never open/close the archive themselves — the caller (tape.cpp) owns the

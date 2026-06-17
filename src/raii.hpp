@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: LGPL-2.1-or-later
+// Copyright (C) 2026 Hugo Hurskainen
+
 // raii.hpp — compile-time constants, invariants, and RAII wrappers.
 //
 // Every OS/library resource the project owns (file descriptors, libarchive
