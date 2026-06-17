@@ -36,9 +36,10 @@ using namespace tapir;
 
 // import: index existing tar tape files. `files` empty → every data tape file.
 // Block size is auto-detected per file; bf_hint (-b) is only a fallback/override.
-static int do_import(const std::string &dev, const std::vector<int> &files, int bf_hint, int mbf)
+static int do_import(const std::string &dev, const std::vector<int> &files, int bf_hint, int mbf, bool verbose)
 {
     Tape tape(dev, mbf);
+    tape.set_verbose(verbose); // narrate tape positioning/reads
 
     // One forward survey: how many tape files, and is the tape full?
     bool full = false;
@@ -107,6 +108,10 @@ static int do_import(const std::string &dev, const std::vector<int> &files, int 
                 if (name == "manifest.json")
                     return; // index file, not data
                 members.emplace_back(name, sha, size);
+                // Printed the moment this member's SHA-256 finishes: name, size, hash.
+                if (verbose)
+                    std::fprintf(stderr, "    %s  %llu  %s\n",
+                                 name.c_str(), static_cast<unsigned long long>(size), sha.c_str());
             });
         if (!ok && members.empty())
         {
@@ -176,9 +181,10 @@ static int do_import(const std::string &dev, const std::vector<int> &files, int 
 }
 
 // append: re-stream a tar from disk into a new tape file at EOD and index it.
-static int do_append(const std::string &dev, const std::string &tarpath, int bf, int mbf)
+static int do_append(const std::string &dev, const std::string &tarpath, int bf, int mbf, bool verbose)
 {
     Tape tape(dev, mbf);
+    tape.set_verbose(verbose); // narrate tape positioning/reads
     Index idx;
 
     std::string manifest;
@@ -218,6 +224,9 @@ static int do_append(const std::string &dev, const std::string &tarpath, int bf,
                                     [&](const std::string &name, const std::string &sha, uint64_t size)
                                     {
                                         collected.emplace_back(name, sha, size);
+                                        if (verbose)
+                                            std::fprintf(stderr, "    %s  %llu  %s\n", name.c_str(),
+                                                         static_cast<unsigned long long>(size), sha.c_str());
                                     });
         },
         [&](int data_tape_file)
@@ -244,14 +253,16 @@ static void usage(const char *argv0)
     std::fprintf(stderr,
                  "mktapir — build/convert the tapir index on a tape\n"
                  "usage:\n"
-                 "  %s import <tape-device> [-f <tape-files>] [-b <block-factor>] [-m <manifest-bf>]\n"
+                 "  %s import <tape-device> [-f <tape-files>] [-b <block-factor>] [-m <manifest-bf>] [-v]\n"
                  "      Index existing tar tape files and write an updated manifest at end of\n"
                  "      tape. With no -f, scans every data tape file (manifest files are\n"
                  "      skipped); -f takes a comma-separated list (e.g. -f 0,2,5). The block\n"
                  "      size is auto-detected per file; -b is only a fallback/override.\n"
-                 "  %s append <tape-device> <file.tar> [-b <block-factor>] [-m <manifest-bf>]\n"
+                 "  %s append <tape-device> <file.tar> [-b <block-factor>] [-m <manifest-bf>] [-v]\n"
                  "      Re-stream a tar from disk into a new tape file at EOD and add its\n"
-                 "      contents to the index.\n",
+                 "      contents to the index.\n"
+                 "  -v / --verbose   log tape positioning and, per member, '<name> <size> <sha256>'\n"
+                 "                   as each member's SHA-256 finishes.\n",
                  argv0, argv0);
 }
 
@@ -264,10 +275,13 @@ int main(int argc, char **argv)
         const std::string dev = argv[2];
         std::vector<int> files; // empty → all data tape files
         int bf = 0 /* 0 = auto-detect */, mbf = 512;
+        bool verbose = false;
         for (int i = 3; i < argc; ++i)
         {
             const std::string a = argv[i];
-            if ((a == "-f" || a == "--tape-file") && i + 1 < argc)
+            if (a == "-v" || a == "--verbose")
+                verbose = true;
+            else if ((a == "-f" || a == "--tape-file") && i + 1 < argc)
             {
                 // comma-separated list, e.g. -f 0,2,5 (repeatable)
                 const std::string v = argv[++i];
@@ -292,17 +306,20 @@ int main(int argc, char **argv)
             usage(argv[0]);
             return 2;
         }
-        return do_import(dev, files, bf, mbf);
+        return do_import(dev, files, bf, mbf, verbose);
     }
 
     if (argc >= 4 && std::strcmp(argv[1], "append") == 0)
     {
         const std::string dev = argv[2], tarpath = argv[3];
         int bf = 512, mbf = 512;
+        bool verbose = false;
         for (int i = 4; i < argc; ++i)
         {
             const std::string a = argv[i];
-            if ((a == "-b" || a == "--block-factor") && i + 1 < argc)
+            if (a == "-v" || a == "--verbose")
+                verbose = true;
+            else if ((a == "-b" || a == "--block-factor") && i + 1 < argc)
                 bf = std::atoi(argv[++i]);
             else if ((a == "-m" || a == "--manifest-block-factor") && i + 1 < argc)
                 mbf = std::atoi(argv[++i]);
@@ -312,7 +329,7 @@ int main(int argc, char **argv)
             usage(argv[0]);
             return 2;
         }
-        return do_append(dev, tarpath, bf, mbf);
+        return do_append(dev, tarpath, bf, mbf, verbose);
     }
 
     usage(argv[0]);

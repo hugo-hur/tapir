@@ -3,6 +3,7 @@
 #include <archive.h>
 #include <archive_entry.h>
 
+#include <cstdio>
 #include <vector>
 
 #include <fcntl.h>
@@ -25,10 +26,30 @@ namespace tapir
         return ioctl(fd.get(), MTIOCTOP, &mt) == 0;
     }
 
-    bool Tape::rewind() { return ctl(MTREW, 1); }
-    bool Tape::eod() { return ctl(MTEOM, 1); } // space to end of data (the append point)
-    bool Tape::fsf(int n) { return ctl(MTFSF, n); }
-    bool Tape::bsf(int n) { return ctl(MTBSF, n); }
+    bool Tape::rewind()
+    {
+        if (verbose_)
+            std::fprintf(stderr, "  tape: rewind to start of tape\n");
+        return ctl(MTREW, 1);
+    }
+    bool Tape::eod()
+    {
+        if (verbose_)
+            std::fprintf(stderr, "  tape: space to end-of-data\n");
+        return ctl(MTEOM, 1); // the append point
+    }
+    bool Tape::fsf(int n)
+    {
+        if (verbose_)
+            std::fprintf(stderr, "  tape: forward over %d file mark(s)\n", n);
+        return ctl(MTFSF, n);
+    }
+    bool Tape::bsf(int n)
+    {
+        if (verbose_)
+            std::fprintf(stderr, "  tape: back over %d file mark(s)\n", n);
+        return ctl(MTBSF, n);
+    }
 
     int Tape::file_number()
     {
@@ -38,12 +59,17 @@ namespace tapir
         struct mtget g{};
         if (ioctl(fd.get(), MTIOCGET, &g) != 0)
             return -1;
-        return g.mt_fileno >= 0 ? static_cast<int>(g.mt_fileno) : 0;
+        const int f = g.mt_fileno >= 0 ? static_cast<int>(g.mt_fileno) : 0;
+        if (verbose_)
+            std::fprintf(stderr, "  tape: now at file %d\n", f);
+        return f;
     }
 
     // ── positioning ───────────────────────────────────────────────────────────────
     bool Tape::position_data(int tape_file)
     {
+        if (verbose_)
+            std::fprintf(stderr, "tape: positioning to data tape file %d\n", tape_file);
         if (!rewind())
             return false;
         return tape_file > 0 ? fsf(tape_file) : true;
@@ -76,7 +102,11 @@ namespace tapir
         if (ioctl(fd.get(), MTIOCGET, &g) != 0)
             return -1;
         full = GMT_EOT(g.mt_gstat) != 0; // at physical end of tape → no room for an index
-        return g.mt_fileno >= 0 ? static_cast<int>(g.mt_fileno) : 0;
+        const int count = g.mt_fileno >= 0 ? static_cast<int>(g.mt_fileno) : 0;
+        if (verbose_)
+            std::fprintf(stderr, "  tape: end-of-data — %d file(s) on tape%s\n",
+                         count, full ? ", tape is FULL" : "");
+        return count;
     }
 
     // ── reads ─────────────────────────────────────────────────────────────────────
@@ -164,9 +194,15 @@ namespace tapir
             std::vector<char> buf(1u << 22); // 4 MiB: larger than any expected tape block
             const ssize_t n = ::read(fd.get(), buf.data(), buf.size());
             if (n <= 0)
+            {
+                if (verbose_)
+                    std::fprintf(stderr, "  tape: file %d is empty or unreadable\n", tape_file);
                 return false;
+            }
             detected = static_cast<int>(n);
         }
+        if (verbose_)
+            std::fprintf(stderr, "  tape: file %d physical block size = %d bytes\n", tape_file, detected);
 
         // Pass 2: rewind and scan with the proven open_fd path, using a read buffer
         // sized to the detected block so reads never come up short.
@@ -175,8 +211,16 @@ namespace tapir
         Fd fd;
         ArchiveReadPtr a = open_read(dev_, detected, fd);
         if (!a)
+        {
+            if (verbose_)
+                std::fprintf(stderr, "  tape: file %d: could not open for reading\n", tape_file);
             return false;
-        return tar_for_each_member(a.get(), cb);
+        }
+        const bool ok = tar_for_each_member(a.get(), cb);
+        if (!ok && verbose_)
+            std::fprintf(stderr, "  tape: file %d: libarchive: %s\n",
+                         tape_file, archive_error_string(a.get()));
+        return ok;
     }
 
     // ── writes ────────────────────────────────────────────────────────────────────

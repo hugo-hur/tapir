@@ -35,6 +35,10 @@ namespace tapir
         Tape(std::string device, int manifest_block_factor)
             : dev_(std::move(device)), mbf_(manifest_block_factor) {}
 
+        // When set, every tape operation (rewind, fsf/bsf, eod, opens, reads) is
+        // logged to stderr — useful for the admin tools (mktapir) and debugging.
+        void set_verbose(bool v) { verbose_ = v; }
+
         // Positioning
         bool rewind();
         bool eod();
@@ -84,6 +88,7 @@ namespace tapir
 
         std::string dev_;
         int mbf_;
+        bool verbose_ = false;
     };
 
 } // namespace tapir
