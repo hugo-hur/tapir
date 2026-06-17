@@ -64,16 +64,19 @@ namespace tapir
         return bsf(2) && fsf(1);
     }
 
-    int Tape::probe_block_size(int tape_file)
+    int Tape::survey(bool &full)
     {
-        if (!position_data(tape_file))
+        full = false;
+        if (!eod()) // one fast locate to end-of-data
             return -1;
         Fd fd(::open(dev_.c_str(), O_RDONLY));
         if (!fd.valid())
             return -1;
-        std::vector<char> buf(1u << 22);                            // 4 MiB: larger than any expected tape block
-        const ssize_t n = ::read(fd.get(), buf.data(), buf.size()); // one read → one physical block
-        return n > 0 ? static_cast<int>(n) : -1;
+        struct mtget g{};
+        if (ioctl(fd.get(), MTIOCGET, &g) != 0)
+            return -1;
+        full = GMT_EOT(g.mt_gstat) != 0; // at physical end of tape → no room for an index
+        return g.mt_fileno >= 0 ? static_cast<int>(g.mt_fileno) : 0;
     }
 
     // ── reads ─────────────────────────────────────────────────────────────────────
@@ -83,6 +86,7 @@ namespace tapir
         if (!fd.valid())
             return nullptr;
         ArchiveReadPtr a(archive_read_new());
+        archive_read_support_filter_all(a.get()); // tolerate gzip/xz/zstd/etc. like GNU tar -tvf does
         archive_read_support_format_tar(a.get());
         if (archive_read_open_fd(a.get(), fd.get(), static_cast<size_t>(bsize)) != ARCHIVE_OK)
             return nullptr;
@@ -98,7 +102,26 @@ namespace tapir
         ArchiveReadPtr a = open_read(dev_, mbf_ * 512, fd);
         if (!a)
             return false;
-        return tar_read_member(a.get(), "manifest.json", out);
+        // A tapir manifest tar's first (and only) member is manifest.json. Check
+        // just that first header: a tapir manifest is found immediately, while a
+        // trailing *data* tape file (a non-tapir tape) is rejected without
+        // scanning the whole thing.
+        struct archive_entry *e;
+        if (archive_read_next_header(a.get(), &e) != ARCHIVE_OK)
+            return false;
+        const char *p = archive_entry_pathname_utf8(e);
+        if (!p)
+            p = archive_entry_pathname(e);
+        if (!p || std::string(p) != "manifest.json")
+            return false;
+        out.clear();
+        const void *b;
+        size_t n;
+        la_int64_t off;
+        int r;
+        while ((r = archive_read_data_block(a.get(), &b, &n, &off)) == ARCHIVE_OK)
+            out.append(static_cast<const char *>(b), n);
+        return r == ARCHIVE_EOF;
     }
 
     bool Tape::read_member(int tape_file, int block_factor, const std::string &member,
@@ -120,6 +143,37 @@ namespace tapir
             return false;
         Fd fd;
         ArchiveReadPtr a = open_read(dev_, block_factor * 512, fd);
+        if (!a)
+            return false;
+        return tar_for_each_member(a.get(), cb);
+    }
+
+    bool Tape::scan_archive_detect(int tape_file, int &detected,
+                                   const std::function<void(const std::string &, const std::string &, uint64_t)> &cb)
+    {
+        detected = 0;
+
+        // Pass 1: read one physical block to learn its size (in variable-block mode
+        // a single read returns exactly one block).
+        if (!position_data(tape_file))
+            return false;
+        {
+            Fd fd(::open(dev_.c_str(), O_RDONLY));
+            if (!fd.valid())
+                return false;
+            std::vector<char> buf(1u << 22); // 4 MiB: larger than any expected tape block
+            const ssize_t n = ::read(fd.get(), buf.data(), buf.size());
+            if (n <= 0)
+                return false;
+            detected = static_cast<int>(n);
+        }
+
+        // Pass 2: rewind and scan with the proven open_fd path, using a read buffer
+        // sized to the detected block so reads never come up short.
+        if (!position_data(tape_file))
+            return false;
+        Fd fd;
+        ArchiveReadPtr a = open_read(dev_, detected, fd);
         if (!a)
             return false;
         return tar_for_each_member(a.get(), cb);
