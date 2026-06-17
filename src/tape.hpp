@@ -4,6 +4,17 @@
 // for reading/writing whole tape files. Mirrors ltfs_to_tar.py's tape layout: a
 // data archive at tape file N, then the cumulative manifest tar at the following
 // file. Part of libtapir.
+//
+// WORM cartridges: all writes go through append(), which positions to EOD
+// (MTEOM) before opening the device for writing — existing data is never
+// overwritten. WORM drives enforce this at the hardware level anyway, so
+// tapir never attempts anything a WORM drive would reject. Reads and backward
+// positioning (manifest lookup, import scanning) are unrestricted on all WORM
+// drives.
+//
+// Tar format compatibility: reads use archive_read_support_format_all, so all
+// tar variants (V7, ustar, GNU, pax/POSIX.1-2001, star) are accepted — a tape
+// written by any standard tool imports cleanly.
 
 #ifndef TAPIR_TAPE_HPP
 #define TAPIR_TAPE_HPP
@@ -56,19 +67,26 @@ namespace tapir
         // rejected without scanning it.
         bool read_latest_manifest(std::string &out);
 
+        // Read manifest.json from a specific tape file (for generation enumeration
+        // and rollback). Returns false if the tape file is not a tapir manifest.
+        bool read_manifest_at(int tape_file, std::string &out);
+
         // Extract one member from the data archive at `tape_file` (streams the tar).
         bool read_member(int tape_file, int block_factor, const std::string &member,
                          Fd &out_fd, uint64_t &out_size);
 
         // Stream every member of the data archive at `tape_file`, calling cb per file.
+        // on_header(name) fires immediately on header read; cb fires after data is hashed.
         bool scan_archive(int tape_file, int block_factor,
-                          const std::function<void(const std::string &, const std::string &, uint64_t)> &cb);
+                          const std::function<void(const std::string &, const std::string &, uint64_t, time_t)> &cb,
+                          const std::function<void(const std::string &)> &on_header = {});
 
         // Like scan_archive, but auto-detects the data archive's physical block size
         // (reported via `detected_block_bytes`) by reading with an oversized buffer —
         // a single pass that both scans and discovers the block factor.
         bool scan_archive_detect(int tape_file, int &detected_block_bytes,
-                                 const std::function<void(const std::string &, const std::string &, uint64_t)> &cb);
+                                 const std::function<void(const std::string &, const std::string &, uint64_t, time_t)> &cb,
+                                 const std::function<void(const std::string &)> &on_header = {});
 
         // Append a new data archive at EOD (written by `write_data`, or skipped if it
         // is empty/null), then write the manifest as the next tape file.

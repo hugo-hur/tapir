@@ -116,26 +116,23 @@ namespace tapir
         if (!fd.valid())
             return nullptr;
         ArchiveReadPtr a(archive_read_new());
-        archive_read_support_filter_all(a.get()); // tolerate gzip/xz/zstd/etc. like GNU tar -tvf does
-        archive_read_support_format_tar(a.get());
+        archive_read_support_filter_all(a.get());  // gzip/xz/zstd/etc.
+        archive_read_support_format_all(a.get()); // V7/ustar/GNU/pax/star — all tar variants
         if (archive_read_open_fd(a.get(), fd.get(), static_cast<size_t>(bsize)) != ARCHIVE_OK)
             return nullptr;
         fd_holder = std::move(fd); // fd must outlive the archive
         return a;
     }
 
-    bool Tape::read_latest_manifest(std::string &out)
+    // Read manifest.json from the tape's current position. Checks that the first
+    // (and only) member is manifest.json; rejects data tape files without
+    // scanning them.
+    static bool read_manifest_body(const std::string &dev, int mbf, std::string &out)
     {
-        if (!position_latest_manifest())
-            return false;
         Fd fd;
-        ArchiveReadPtr a = open_read(dev_, mbf_ * 512, fd);
+        ArchiveReadPtr a = open_read(dev, mbf * 512, fd);
         if (!a)
             return false;
-        // A tapir manifest tar's first (and only) member is manifest.json. Check
-        // just that first header: a tapir manifest is found immediately, while a
-        // trailing *data* tape file (a non-tapir tape) is rejected without
-        // scanning the whole thing.
         struct archive_entry *e;
         if (archive_read_next_header(a.get(), &e) != ARCHIVE_OK)
             return false;
@@ -154,6 +151,20 @@ namespace tapir
         return r == ARCHIVE_EOF;
     }
 
+    bool Tape::read_latest_manifest(std::string &out)
+    {
+        if (!position_latest_manifest())
+            return false;
+        return read_manifest_body(dev_, mbf_, out);
+    }
+
+    bool Tape::read_manifest_at(int tape_file, std::string &out)
+    {
+        if (!position_data(tape_file))
+            return false;
+        return read_manifest_body(dev_, mbf_, out);
+    }
+
     bool Tape::read_member(int tape_file, int block_factor, const std::string &member,
                            Fd &out_fd, uint64_t &out_size)
     {
@@ -167,7 +178,8 @@ namespace tapir
     }
 
     bool Tape::scan_archive(int tape_file, int block_factor,
-                            const std::function<void(const std::string &, const std::string &, uint64_t)> &cb)
+                            const std::function<void(const std::string &, const std::string &, uint64_t, time_t)> &cb,
+                            const std::function<void(const std::string &)> &on_header)
     {
         if (!position_data(tape_file))
             return false;
@@ -175,11 +187,12 @@ namespace tapir
         ArchiveReadPtr a = open_read(dev_, block_factor * 512, fd);
         if (!a)
             return false;
-        return tar_for_each_member(a.get(), cb);
+        return tar_for_each_member(a.get(), cb, on_header);
     }
 
     bool Tape::scan_archive_detect(int tape_file, int &detected,
-                                   const std::function<void(const std::string &, const std::string &, uint64_t)> &cb)
+                                   const std::function<void(const std::string &, const std::string &, uint64_t, time_t)> &cb,
+                                   const std::function<void(const std::string &)> &on_header)
     {
         detected = 0;
 
@@ -216,7 +229,7 @@ namespace tapir
                 std::fprintf(stderr, "  tape: file %d: could not open for reading\n", tape_file);
             return false;
         }
-        const bool ok = tar_for_each_member(a.get(), cb);
+        const bool ok = tar_for_each_member(a.get(), cb, on_header);
         if (!ok && verbose_)
             std::fprintf(stderr, "  tape: file %d: libarchive: %s\n",
                          tape_file, archive_error_string(a.get()));
