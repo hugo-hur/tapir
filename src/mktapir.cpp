@@ -56,8 +56,10 @@ static int do_import(const std::string &dev, const std::vector<int> &files, int 
         return 1;
     }
 
-    // An explicit -f list adds to the existing index; a full scan (no -f) rebuilds
-    // from everything on the tape, so it skips loading the old manifest entirely.
+    // An explicit -f list adds to the existing index; a full scan (no -f) is only
+    // for tapes that have never had a tapir index written — if one already exists,
+    // refuse: a rescan would recover index-deleted files and mis-index overwritten
+    // files (first occurrence wins, not latest). Use tfsck for recovery instead.
     Index idx;
     if (!files.empty())
     {
@@ -81,6 +83,17 @@ static int do_import(const std::string &dev, const std::vector<int> &files, int 
     }
     else
     {
+        std::string existing;
+        if (count > 0 && tape.read_manifest_at(count - 1, existing))
+        {
+            std::fprintf(stderr,
+                         "mktapir: tape already has a tapir index — refusing full rescan.\n"
+                         "         A rescan would recover index-deleted files and pick the wrong\n"
+                         "         version of overwritten files (first on tape, not latest).\n"
+                         "         Use -f <tape-files> to add specific new tape files to the index,\n"
+                         "         or use tfsck for index recovery and rollback.\n");
+            return 1;
+        }
         std::fprintf(stderr, "mktapir: building a new index from all data on the tape\n");
     }
 
@@ -100,18 +113,21 @@ static int do_import(const std::string &dev, const std::vector<int> &files, int 
             continue;
         }
         int detected = 0;
-        std::vector<std::tuple<std::string, std::string, uint64_t>> members;
+        std::vector<std::tuple<std::string, std::string, uint64_t, time_t>> members;
         const bool ok = tape.scan_archive_detect(
             f, detected,
-            [&](const std::string &name, const std::string &sha, uint64_t size)
+            [&](const std::string &name, const std::string &sha, uint64_t size, time_t mtime)
             {
                 if (name == "manifest.json")
                     return; // index file, not data
-                members.emplace_back(name, sha, size);
-                // Printed the moment this member's SHA-256 finishes: name, size, hash.
+                members.emplace_back(name, sha, size, mtime);
                 if (verbose)
-                    std::fprintf(stderr, "    %s  %llu  %s\n",
-                                 name.c_str(), static_cast<unsigned long long>(size), sha.c_str());
+                    std::fprintf(stderr, "      %s  %llu\n", sha.c_str(), static_cast<unsigned long long>(size));
+            },
+            [&](const std::string &name)
+            {
+                if (verbose && name != "manifest.json")
+                    std::fprintf(stderr, "    %s\n", name.c_str());
             });
         if (!ok && members.empty())
         {
@@ -150,8 +166,8 @@ static int do_import(const std::string &dev, const std::vector<int> &files, int 
                                  "at tape file %d; using detected\n",
                          bf_hint, detected_bf, f);
 
-        for (const auto &[name, sha, size] : members)
-            idx.add_file(name, size, sha, f, bf);
+        for (const auto &[name, sha, size, mtime] : members)
+            idx.add_file(name, size, sha, f, bf, mtime);
         total += static_cast<int>(members.size());
         std::fprintf(stderr, "mktapir: tape file %d: %zu file(s), block size %d bytes (factor %d)\n",
                      f, members.size(), detected, bf);
@@ -206,24 +222,24 @@ static int do_append(const std::string &dev, const std::string &tarpath, int bf,
     }
 
     ArchiveReadPtr in(archive_read_new());
-    archive_read_support_format_tar(in.get());
-    archive_read_support_filter_all(in.get()); // tolerate .tar.gz/.xz etc.
+    archive_read_support_filter_all(in.get()); // gzip/xz/zstd/etc.
+    archive_read_support_format_all(in.get()); // V7/ustar/GNU/pax/star
     if (archive_read_open_filename(in.get(), tarpath.c_str(), 1 << 16) != ARCHIVE_OK)
     {
         std::fprintf(stderr, "mktapir: cannot open tar %s\n", tarpath.c_str());
         return 1;
     }
 
-    std::vector<std::tuple<std::string, std::string, uint64_t>> collected;
+    std::vector<std::tuple<std::string, std::string, uint64_t, time_t>> collected;
     int dtf = 0;
     const bool ok = tape.append(
         bf,
         [&](struct archive *out)
         {
             return tar_copy_members(in.get(), out,
-                                    [&](const std::string &name, const std::string &sha, uint64_t size)
+                                    [&](const std::string &name, const std::string &sha, uint64_t size, time_t mtime)
                                     {
-                                        collected.emplace_back(name, sha, size);
+                                        collected.emplace_back(name, sha, size, mtime);
                                         if (verbose)
                                             std::fprintf(stderr, "    %s  %llu  %s\n", name.c_str(),
                                                          static_cast<unsigned long long>(size), sha.c_str());
@@ -231,8 +247,8 @@ static int do_append(const std::string &dev, const std::string &tarpath, int bf,
         },
         [&](int data_tape_file)
         {
-            for (auto &[name, sha, size] : collected)
-                idx.add_file(name, size, sha, data_tape_file, bf);
+            for (auto &[name, sha, size, mtime] : collected)
+                idx.add_file(name, size, sha, data_tape_file, bf, mtime);
             return idx.serialize(-1, mbf);
         },
         dtf);
