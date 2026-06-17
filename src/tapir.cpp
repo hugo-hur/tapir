@@ -103,34 +103,39 @@ namespace
         std::memset(st, 0, sizeof(*st));
         st->st_uid = g->uid;
         st->st_gid = g->gid;
-        st->st_atime = st->st_mtime = st->st_ctime = g->mtime;
+        st->st_atime = st->st_ctime = g->mtime;
         if (n->is_dir)
         {
+            st->st_mtime = g->mtime;
             st->st_mode = S_IFDIR | kDirMode;
             st->st_nlink = 2;
         }
         else
         {
+            st->st_mtime = n->mtime ? n->mtime : g->mtime;
             st->st_mode = S_IFREG | (n->writing ? kNewFileMode : kFileMode);
             st->st_nlink = 1;
             st->st_size = static_cast<off_t>(n->size);
             st->st_blocks = static_cast<blkcnt_t>((n->size + 511) / 512);
         }
     }
-    // TODO move this into index class?
     void flush_index()
     {
         std::vector<OutFile> staged;
-        std::function<void(const Node *, const std::string &)> walk =
-            [&](const Node *n, const std::string &prefix)
+        std::vector<Node *> staged_nodes; // parallel to staged — updated after write
+        std::function<void(Node *, const std::string &)> walk =
+            [&](Node *n, const std::string &prefix)
         {
-            for (const auto &[name, child] : n->children)
+            for (auto &[name, child] : n->children)
             {
                 const std::string p = prefix.empty() ? name : prefix + "/" + name;
                 if (child->is_dir)
                     walk(child.get(), p);
                 else if (child->staged)
-                    staged.push_back({p, child->staged->fd.get(), child->staged->size, child->staged->mtime});
+                {
+                    staged.push_back({p, child->staged->fd.get(), child->staged->size, child->mtime});
+                    staged_nodes.push_back(child.get());
+                }
             }
         };
         walk(g->index.root(), "");
@@ -146,10 +151,20 @@ namespace
             { return g->index.serialize(data_tape_file, g->block_factor); },
             dtf);
         if (!ok)
+        {
             std::fprintf(stderr, "tapir: FAILED to write index/data to tape — changes not committed\n");
-        else
-            std::fprintf(stderr, "tapir: committed %zu appended file(s); new data at tape file %d\n",
-                         staged.size(), dtf);
+            return;
+        }
+        std::fprintf(stderr, "tapir: committed %zu appended file(s); new data at tape file %d\n",
+                     staged.size(), dtf);
+        // Promote staged nodes to sealed: they now live on tape at dtf.
+        for (Node *n : staged_nodes)
+        {
+            n->data_tape_file = dtf;
+            n->block_factor = g->block_factor;
+            n->staged.reset();
+        }
+        g->index.mark_clean();
     }
 
     // ── FUSE ops ──────────────────────────────────────────────────────────────────
@@ -162,23 +177,24 @@ namespace
         return nullptr;
     }
 
-    // TODO: add forced data and index flushing on "sync" command (add the missing fsync function).
-    inline static void flush_data()
+    // Flush staged files + index to tape. Must be called with g->mtx held.
+    // Safe to call multiple times: flush_index() promotes staged nodes to sealed
+    // and clears the dirty flag, so a second call with no new writes is a no-op.
+    static void sync_locked()
     {
-        std::lock_guard<std::mutex> lk(g->mtx);
         if (g->index.dirty())
             flush_index();
-        g->cache.clear();
-        g->writers.clear();
     }
 
-    // Unmounting / exiting
+    // Unmount: sync then drop read cache and any lingering write handles.
     void t_destroy(void *)
     {
-        if (g)
-        {
-            flush_data();
-        }
+        if (!g)
+            return;
+        std::lock_guard<std::mutex> lk(g->mtx);
+        sync_locked();
+        g->cache.clear();
+        g->writers.clear();
     }
 
     int t_getattr(const char *path, struct stat *st, struct fuse_file_info *)
@@ -234,6 +250,7 @@ namespace
         Node *n = g->index.create_file(path);
         if (!n)
             return -ENOENT;
+        n->mtime = std::time(nullptr);
         auto h = std::make_unique<WriteHandle>();
         h->path = path;
         h->node = n;
@@ -342,9 +359,9 @@ namespace
         {
             h->node->sha256 = h->sha.hex();
             h->node->size = h->pos;
+            h->node->mtime = std::time(nullptr); // write-completion time; overridable via utimens
             auto st = std::make_shared<Staged>();
             st->size = h->pos;
-            st->mtime = std::time(nullptr); // default to write time; overridable via utimens
             st->fd = std::move(h->fd);
             h->node->staged = std::move(st);
             h->node->writing = nullptr;
@@ -385,9 +402,9 @@ namespace
         return g->index.remove_dir(path) ? 0 : -ENOTEMPTY;
     }
 
-    // mv(1) calls utimensat() after writing to restore the source file's timestamps.
-    // We don't store per-node timestamps (the tar header records write time), so
-    // accept silently for staged/writing nodes. Sealed on-tape files are immutable.
+    // mv(1) and touch(1) call utimensat() to set timestamps. Staged/writing nodes
+    // store the mtime in Node::mtime (authoritative for stat + the tar header at
+    // unmount). Sealed on-tape files are immutable.
     static int t_utimens(const char *path, const struct timespec tv[2],
                          struct fuse_file_info *)
     {
@@ -397,13 +414,32 @@ namespace
             return -ENOENT;
         if (!n->is_dir && !n->staged && !n->writing)
             return -EPERM; // sealed on-tape file: truly immutable
-        // tv[1] is the mtime requested (tv[0] is atime, which we don't store).
-        if (n->staged && tv)
-            n->staged->mtime = tv[1].tv_sec;
+        if (tv)
+        {
+            const time_t t = (tv[1].tv_nsec == UTIME_NOW)  ? std::time(nullptr)
+                           : (tv[1].tv_nsec == UTIME_OMIT) ? n->mtime
+                           : tv[1].tv_sec;
+            n->mtime = t;
+            if (n->staged)
+                n->staged->mtime = t;
+        }
         return 0;
     }
 
-    // TODO can this be a constexpr?
+    static int t_fsync(const char *, int, struct fuse_file_info *)
+    {
+        std::lock_guard<std::mutex> lk(g->mtx);
+        sync_locked();
+        return 0;
+    }
+
+    static int t_fsyncdir(const char *, int, struct fuse_file_info *)
+    {
+        std::lock_guard<std::mutex> lk(g->mtx);
+        sync_locked();
+        return 0;
+    }
+
     const struct fuse_operations tapir_ops = {
         .getattr = t_getattr,
         .mkdir = t_mkdir,
@@ -414,7 +450,9 @@ namespace
         .read = t_read,
         .write = t_write,
         .release = t_release,
+        .fsync = t_fsync,
         .readdir = t_readdir,
+        .fsyncdir = t_fsyncdir,
         .init = t_init,
         .destroy = t_destroy,
         .create = t_create,
@@ -468,6 +506,7 @@ int main(int argc, char **argv)
     st.mtime = time(nullptr);
 
     std::string manifest_json;
+    std::fprintf(stderr, "tapir: searching for manifest at end of tape %s...\n", device.c_str());
     if (!st.tape->read_latest_manifest(manifest_json))
     {
         std::fprintf(stderr, "tapir: could not read a manifest from %s\n", device.c_str());
@@ -484,6 +523,10 @@ int main(int argc, char **argv)
     }
 
     g = &st;
-    std::fprintf(stderr, "tapir: mounted %s (block factor %d)\n", device.c_str(), bf);
+    std::fprintf(stderr, "tapir: mounted %s — volume %s, generation %llu, %zu file(s)\n",
+                 device.c_str(),
+                 st.index.volume_uuid().c_str(),
+                 static_cast<unsigned long long>(st.index.latest_generation()),
+                 st.index.flat().size());
     return fuse_main(static_cast<int>(fargs.size()), fargs.data(), &tapir_ops, nullptr);
 }
