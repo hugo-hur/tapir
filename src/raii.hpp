@@ -1,9 +1,10 @@
 // raii.hpp — compile-time constants, invariants, and RAII wrappers.
 //
 // Every OS/library resource the project owns (file descriptors, libarchive
-// handles, OpenSSL digest contexts) is wrapped here so that ordinary code never
-// calls close()/free()/delete itself. The *only* close()/*_free() calls in the
-// whole codebase live in the deleters below.
+// handles) is wrapped here so that ordinary code never calls close()/free()/delete
+// itself. OpenSSL EVP digest contexts are wrapped the same way in security.hpp,
+// where the crypto lives. The only close()/*_free() calls in the whole codebase
+// live in these deleters.
 
 #ifndef TAPIR_RAII_HPP
 #define TAPIR_RAII_HPP
@@ -73,7 +74,8 @@ namespace tapir
         int fd_ = -1;
     };
 
-    // ── libarchive / OpenSSL handles ──────────────────────────────────────────────
+    // ── libarchive handles ────────────────────────────────────────────────────────
+    // (OpenSSL EVP digest contexts are wrapped in security.hpp, where the crypto lives.)
     struct ArchiveReadDeleter
     {
         void operator()(struct archive *a) const noexcept
@@ -96,14 +98,6 @@ namespace tapir
         {
             if (e)
                 archive_entry_free(e);
-        }
-    };
-    struct EvpCtxDeleter
-    {
-        void operator()(EVP_MD_CTX *c) const noexcept
-        {
-            if (c)
-                EVP_MD_CTX_free(c);
         }
     };
 

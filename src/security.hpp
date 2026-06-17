@@ -1,15 +1,23 @@
 #ifndef TAPIR_SECURITY_HPP
 #define TAPIR_SECURITY_HPP
 
+#include "raii.hpp" // EvpCtxDeleter, hex_digit
+
 #include <openssl/evp.h>
-#include <bit>
-#include <array>
+#include <openssl/rand.h>
+
 #include <algorithm>
+#include <array>
+#include <cstddef>
+#include <cstdint>
+#include <limits>
+#include <memory>
+#include <string>
 
 namespace tapir::security
 {
-    // Uint64 to big endian bytes
-    static inline std::array<std::byte, 8> Uint64ToBigEndianBytes(std::uint64_t v)
+    // Uint64 to big-endian bytes.
+    inline std::array<std::byte, 8> Uint64ToBigEndianBytes(std::uint64_t v)
     {
         std::array<std::byte, 8> out;
 
@@ -24,26 +32,24 @@ namespace tapir::security
 
         return out;
     }
-    // Byte data concatenation helper
-    static template <class T, std::size_t... Ns>
-    constexpr std::array<T, (Ns + ...)> Concat(
-        const std::array<T, Ns> &...arrays)
+
+    // Byte-array concatenation helper. Field boundaries are fixed at compile time
+    // by each array's size, so distinct inputs never collide (see the KDF note in
+    // security.cpp).
+    template <class T, std::size_t... Ns>
+    constexpr std::array<T, (Ns + ...)> ByteConcat(const std::array<T, Ns> &...arrays)
     {
         std::array<T, (Ns + ...)> out{};
-
         std::size_t offset = 0;
-
-        ((std::copy(arrays.begin(), arrays.end(), out.begin() + offset),
-          offset += Ns),
-         ...);
-
+        ((std::copy(arrays.begin(), arrays.end(), out.begin() + offset), offset += Ns), ...);
         return out;
     }
-    // Random bytes helper
-    static inline template <std::size_t N>
+
+    // CSPRNG bytes.
+    template <std::size_t N>
     std::array<std::byte, N> CsprngBytes()
     {
-        // Enforce N conforming to limits at compile time
+        // Enforce N conforming to limits at compile time.
         static_assert(N > 0 && N <= static_cast<std::size_t>(std::numeric_limits<int>::max()),
                       "N too large for RAND_bytes");
         std::array<std::byte, N> b;
@@ -51,7 +57,17 @@ namespace tapir::security
         return b;
     }
 
+    // OpenSSL EVP digest-context deleter (the only EVP_MD_CTX_free in the codebase).
+    struct EvpCtxDeleter
+    {
+        void operator()(EVP_MD_CTX *c) const noexcept
+        {
+            if (c)
+                EVP_MD_CTX_free(c);
+        }
+    };
     using EvpCtxPtr = std::unique_ptr<EVP_MD_CTX, EvpCtxDeleter>;
+
     // ── SHA-256 helper class ───────────────────────────────────────────────────────
     class Sha256
     {
@@ -64,18 +80,20 @@ namespace tapir::security
         std::string hex() const;
 
         static std::array<std::byte, 32> Oneshot(const void *data, std::size_t n);
-        static inline template <class T, std::size_t N>
-        std::array<std::byte, 32> Oneshot(const std::array<T, N> &a)
+        template <class T, std::size_t N>
+        static std::array<std::byte, 32> Oneshot(const std::array<T, N> &a)
         {
-            return Oneshot(a.data(), N);
+            return Oneshot(a.data(), N * sizeof(T));
         }
     };
 
     class SoftwareEncryption
     {
     private:
-        std::array<std::byte, 32> derive_per_tape_key(std::array<std::byte, 32> master_key, std::array<std::byte, 16> volume_uuid, std::uint64_t write_generation);
+        std::array<std::byte, 32> derive_per_tape_key(std::array<std::byte, 32> master_key,
+                                                      std::array<std::byte, 16> volume_uuid,
+                                                      std::uint64_t write_generation);
     };
 }
 
-#endif
+#endif // TAPIR_SECURITY_HPP
