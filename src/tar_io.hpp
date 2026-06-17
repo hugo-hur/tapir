@@ -39,17 +39,21 @@ namespace tapir
     bool tar_write_files(struct archive *a, const std::vector<OutFile> &files);
     bool tar_write_member(struct archive *a, const std::string &member, const std::string &data);
 
-    // Stream every regular member, invoking cb(name, sha256_hex, size). For tfsck.
+    // Stream every regular member. on_header(name) is called immediately after the
+    // tar header is read (before any data is consumed); cb(name, sha256, size, mtime)
+    // is called after the member's data has been fully read and hashed. on_header
+    // may be empty — it is only invoked when non-null.
     bool tar_for_each_member(
         struct archive *a,
-        const std::function<void(const std::string &name, const std::string &sha256, uint64_t size)> &cb);
+        const std::function<void(const std::string &name, const std::string &sha256, uint64_t size, time_t mtime)> &cb,
+        const std::function<void(const std::string &name)> &on_header = {});
 
     // Copy every member from read-archive `in` to write-archive `out` (normalising
-    // leading "./" or "/"), computing SHA-256 and invoking cb(name, sha256, size)
+    // leading "./" or "/"), computing SHA-256 and invoking cb(name, sha256, size, mtime)
     // per regular file. For importing a tar from disk onto the tape.
     bool tar_copy_members(
         struct archive *in, struct archive *out,
-        const std::function<void(const std::string &name, const std::string &sha256, uint64_t size)> &cb);
+        const std::function<void(const std::string &name, const std::string &sha256, uint64_t size, time_t mtime)> &cb);
 
 } // namespace tapir
 

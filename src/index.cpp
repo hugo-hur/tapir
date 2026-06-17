@@ -127,13 +127,14 @@ namespace tapir
     }
 
     void Index::add_file(const std::string &path, uint64_t size, const std::string &sha256,
-                         int dtf, int bf)
+                         int dtf, int bf, time_t mtime)
     {
         Node *n = ensure_path(path, false);
         if (!n)
             return; // already indexed — keep the existing entry
         n->size = size;
         n->sha256 = sha256;
+        n->mtime = mtime;
         n->data_tape_file = dtf;
         n->block_factor = bf;
         if (meta_.find(dtf) == meta_.end())
@@ -220,6 +221,7 @@ namespace tapir
                 if (!n)
                     continue;
                 n->size = f.at("size").get<uint64_t>();
+                n->mtime = f.value("mtime", static_cast<time_t>(0));
                 n->data_tape_file = dtf;
                 n->block_factor = bf;
                 if (auto it = f.find("hashes"); it != f.end() && it->is_object())
@@ -316,6 +318,7 @@ namespace tapir
                 json f = json::object();
                 f["path"] = path;
                 f["size"] = node->size;
+                f["mtime"] = node->mtime;
                 f["hashes"] = node->sha256.empty()
                                   ? json::object()
                                   : json::object({{"sha256sum", node->sha256}});

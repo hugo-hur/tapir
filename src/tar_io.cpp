@@ -135,13 +135,14 @@ namespace tapir
 
     bool tar_copy_members(
         struct archive *in, struct archive *out,
-        const std::function<void(const std::string &, const std::string &, uint64_t)> &cb)
+        const std::function<void(const std::string &, const std::string &, uint64_t, time_t)> &cb)
     {
         struct archive_entry *e;
         int r;
         while ((r = archive_read_next_header(in, &e)) == ARCHIVE_OK)
         {
             const std::string name = normalize(epath(e));
+            const time_t entry_mtime = archive_entry_mtime(e);
             archive_entry_set_pathname_utf8(e, name.c_str()); // normalise on-tape name too
             if (archive_write_header(out, e) != ARCHIVE_OK)
                 return false;
@@ -165,14 +166,15 @@ namespace tapir
             if (rr != ARCHIVE_EOF)
                 return false;
             if (is_file)
-                cb(name, sha.hex(), total);
+                cb(name, sha.hex(), total, entry_mtime);
         }
         return r == ARCHIVE_EOF;
     }
 
     bool tar_for_each_member(
         struct archive *a,
-        const std::function<void(const std::string &, const std::string &, uint64_t)> &cb)
+        const std::function<void(const std::string &, const std::string &, uint64_t, time_t)> &cb,
+        const std::function<void(const std::string &)> &on_header)
     {
         struct archive_entry *e;
         int r;
@@ -183,6 +185,10 @@ namespace tapir
                 archive_read_data_skip(a);
                 continue;
             }
+            const std::string name = normalize(epath(e));
+            const time_t entry_mtime = archive_entry_mtime(e);
+            if (on_header)
+                on_header(name);
             security::Sha256 sha;
             const void *b;
             size_t n;
@@ -196,7 +202,7 @@ namespace tapir
             }
             if (rr != ARCHIVE_EOF)
                 return false;
-            cb(normalize(epath(e)), sha.hex(), total); // strip leading "./" or "/"
+            cb(name, sha.hex(), total, entry_mtime);
         }
         return r == ARCHIVE_EOF;
     }

@@ -37,6 +37,7 @@ namespace tapir
         bool is_dir = false;
         uint64_t size = 0;
         std::string sha256;
+        time_t mtime = 0; // per-file mtime; 0 means use the filesystem mount time
         int data_tape_file = 0;         // tape file holding this member's data
         int block_factor = 0;           // blocking factor of that tape file
         std::shared_ptr<Staged> staged; // non-null while data lives only in a temp file
@@ -69,7 +70,7 @@ namespace tapir
         // Import an existing member (e.g. when converting a pre-existing tar tape file):
         // records the file at the given tape file + block factor. No-op if it already exists.
         void add_file(const std::string &path, uint64_t size, const std::string &sha256,
-                      int data_tape_file, int block_factor);
+                      int data_tape_file, int block_factor, time_t mtime = 0);
 
         bool make_dir(const std::string &path);
         bool remove_dir(const std::string &path);
@@ -77,6 +78,7 @@ namespace tapir
 
         bool dirty() const { return dirty_; }
         void mark_dirty() { dirty_ = true; }
+        void mark_clean() { dirty_ = false; }
 
         const Node *root() const { return root_.get(); }
         Node *root() { return root_.get(); }
