@@ -16,6 +16,7 @@
 
 namespace tapir::security
 {
+
     // Uint64 to big-endian bytes.
     inline std::array<std::byte, 8> Uint64ToBigEndianBytes(std::uint64_t v)
     {
@@ -57,22 +58,37 @@ namespace tapir::security
         return b;
     }
 
-    // OpenSSL EVP digest-context deleter (the only EVP_MD_CTX_free in the codebase).
-    struct EvpCtxDeleter
+    // Random v4 UUID (8-4-4-4-12 hex) from a CSPRNG — uniquely identifies a tape.
+    // This class supports automatic string conversion and forming new uuids
+    class UuidV4
     {
-        void operator()(EVP_MD_CTX *c) const noexcept
-        {
-            if (c)
-                EVP_MD_CTX_free(c);
-        }
+    private:
+        std::array<std::byte, 16> bytes;
+
+    public:
+        UuidV4(std::string_view input);
+        UuidV4(std::array<std::byte, 16> input);
+        UuidV4() : UuidV4(CsprngBytes<16>()) {};
+        operator std::string() const;
+        // Implicitly inline
+        operator std::array<std::byte, 16>() const { return bytes; }
     };
-    using EvpCtxPtr = std::unique_ptr<EVP_MD_CTX, EvpCtxDeleter>;
 
     // ── SHA-256 helper class ───────────────────────────────────────────────────────
     class Sha256
     {
     private:
-        EvpCtxPtr ctx_;
+        // OpenSSL EVP digest-context deleter (the only EVP_MD_CTX_free in the codebase).
+        struct EvpCtxDeleter
+        {
+            void operator()(EVP_MD_CTX *c) const noexcept
+            {
+                if (c)
+                    EVP_MD_CTX_free(c);
+            }
+        };
+
+        std::unique_ptr<EVP_MD_CTX, EvpCtxDeleter> ctx_;
 
     public:
         Sha256();

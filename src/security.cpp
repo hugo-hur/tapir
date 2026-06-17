@@ -5,6 +5,61 @@
 
 namespace tapir::security
 {
+    UuidV4::UuidV4(std::string_view input)
+    {
+        if (s.size() != 36 || s[8] != '-' || s[13] != '-' || s[18] != '-' || s[23] != '-')
+            throw std::invalid_argument("invalid uuid format");
+        // TODO check if these two lambdas can instead use existing helpers in raai.hpp for example
+        auto nib = [](char c) -> uint8_t
+        {
+            if (c >= '0' && c <= '9')
+                return c - '0';
+            if (c >= 'a' && c <= 'f')
+                return c - 'a' + 10;
+            if (c >= 'A' && c <= 'F')
+                return c - 'A' + 10;
+            throw std::invalid_argument("invalid hex char in uuid");
+        };
+        auto byte_at = [&](int i) -> std::byte
+        {
+            return std::byte((nib(s[i]) << 4) | nib(s[i + 1]));
+        };
+
+        // positions of each hex pair, skipping dashes at 8,13,18,23
+        data = std::array<std::byte, 16>{{
+            byte_at(0),
+            byte_at(2),
+            byte_at(4),
+            byte_at(6), // 8 hex chars
+            byte_at(9),
+            byte_at(11), // 4 hex chars
+            byte_at(14),
+            byte_at(16), // 4 hex chars
+            byte_at(19),
+            byte_at(21), // 4 hex chars
+            byte_at(24),
+            byte_at(26),
+            byte_at(28), // 12 hex chars
+            byte_at(30),
+            byte_at(32),
+            byte_at(34),
+        }};
+    }
+
+    UuidV4::UuidV4(std::array<std::byte, 16> input) : bytes(input)
+    {
+        bytes[6] = (bytes[6] & 0x0F) | 0x40; // version 4
+        bytes[8] = (bytes[8] & 0x3F) | 0x80; // variant 1
+    }
+    UuidV4::operator std::string() const
+    {
+        char s[37];
+        std::snprintf(s, sizeof s,
+                      "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+                      data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
+                      data[8], data[9], data[10], data[11], data[12], data[13], data[14], data[15]);
+        return std::string(s);
+    }
 
     Sha256::Sha256() : ctx_(EVP_MD_CTX_new())
     {
