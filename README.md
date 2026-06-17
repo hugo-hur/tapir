@@ -1,3 +1,5 @@
+![tapir logo](docs/tapir_logo.png)
+
 # tapir (TApe Physical-Index aRchive)
 
 A FUSE filesystem and tools for easily browsing/appending to a **tar tape archive**:
