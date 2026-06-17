@@ -195,7 +195,7 @@ namespace tapir
             }
             if (rr != ARCHIVE_EOF)
                 return false;
-            cb(epath(e), sha.hex(), total);
+            cb(normalize(epath(e)), sha.hex(), total); // strip leading "./" or "/"
         }
         return r == ARCHIVE_EOF;
     }

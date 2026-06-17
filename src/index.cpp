@@ -19,16 +19,14 @@ namespace tapir
         {
             if (c == '/')
             {
-                if (!cur.empty())
-                {
+                if (!cur.empty() && cur != ".") // skip "" and "." (e.g. a "./" prefix)
                     parts.push_back(cur);
-                    cur.clear();
-                }
+                cur.clear();
             }
             else
                 cur += c;
         }
-        if (!cur.empty())
+        if (!cur.empty() && cur != ".")
             parts.push_back(cur);
         return parts;
     }
