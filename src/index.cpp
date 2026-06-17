@@ -1,7 +1,11 @@
 #include "index.hpp"
+#include "security.hpp"
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
+#include <cstdio>
+#include <cstring>
 #include <ctime>
 #include <stdexcept>
 #include <utility>
@@ -10,6 +14,22 @@ namespace tapir
 {
 
     using json = nlohmann::json;
+
+    // Random v4 UUID (8-4-4-4-12 hex) from a CSPRNG — uniquely identifies a tape.
+    static std::string generate_uuid_v4()
+    {
+        const auto rnd = security::CsprngBytes<16>();
+        unsigned char b[16];
+        std::memcpy(b, rnd.data(), sizeof b);
+        b[6] = (b[6] & 0x0F) | 0x40; // version 4
+        b[8] = (b[8] & 0x3F) | 0x80; // variant 1
+        char s[37];
+        std::snprintf(s, sizeof s,
+                      "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
+                      b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
+                      b[8], b[9], b[10], b[11], b[12], b[13], b[14], b[15]);
+        return std::string(s);
+    }
 
     static std::vector<std::string> split(const std::string &p)
     {
@@ -180,9 +200,12 @@ namespace tapir
             Meta m;
             m.manifest_tape_file = h.value("manifest_tape_file", dtf + 1);
             m.block_factor = bf;
+            m.generation = h.value("write_generation", static_cast<uint64_t>(0));
             m.source = h.value("source", std::string{});
             m.created = h.value("created", std::string{});
             meta_[dtf] = m;
+            if (const std::string vu = h.value("volume_uuid", std::string{}); volume_uuid_.empty() && !vu.empty())
+                volume_uuid_ = vu; // volume id is constant across the tape
             if (first)
             {
                 source = m.source;
@@ -232,8 +255,19 @@ namespace tapir
         return out;
     }
 
-    std::string Index::serialize(int new_dtf, int new_bf) const
+    uint64_t Index::latest_generation() const
     {
+        uint64_t g = 0;
+        for (const auto &[k, m] : meta_)
+            g = std::max(g, m.generation);
+        return g;
+    }
+
+    std::string Index::serialize(int new_dtf, int new_bf)
+    {
+        if (volume_uuid_.empty())
+            volume_uuid_ = generate_uuid_v4(); // first tapir write to this tape
+
         std::vector<std::pair<std::string, const Node *>> files;
         collect(root_.get(), "", files);
 
@@ -244,6 +278,8 @@ namespace tapir
             const int key = pr.second->staged ? new_dtf : pr.second->data_tape_file;
             groups[key].push_back(pr);
         }
+
+        const uint64_t next_gen = latest_generation() + 1; // for archives written this session
 
         char now[32] = {0};
         std::time_t t = std::time(nullptr);
@@ -257,6 +293,7 @@ namespace tapir
         {
             auto mit = meta_.find(dtf);
             const bool is_new = (mit == meta_.end());
+            const uint64_t gen = is_new ? next_gen : mit->second.generation;
             uint64_t total = 0;
             for (const auto &pr : v)
                 total += pr.second->size;
@@ -266,6 +303,8 @@ namespace tapir
             h["index"] = idx;
             h["data_tape_file"] = dtf;
             h["manifest_tape_file"] = is_new ? dtf + 1 : mit->second.manifest_tape_file;
+            h["volume_uuid"] = volume_uuid_;
+            h["write_generation"] = gen;
             h["source"] = is_new ? source : mit->second.source;
             h["created"] = is_new ? std::string(now) : mit->second.created;
             h["block_factor"] = is_new ? new_bf : mit->second.block_factor;
@@ -285,6 +324,17 @@ namespace tapir
             }
             out.push_back(std::move(arc));
             ++idx;
+
+            if (is_new) // record so latest_generation() reflects this write
+            {
+                Meta m;
+                m.manifest_tape_file = dtf + 1;
+                m.block_factor = new_bf;
+                m.generation = gen;
+                m.source = source;
+                m.created = now;
+                meta_[dtf] = m;
+            }
         }
         return out.dump();
     }

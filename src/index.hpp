@@ -81,9 +81,16 @@ namespace tapir
 
         // Serialise to manifest.json. Staged files are assigned to a new archive at
         // tape file `new_data_tape_file` with blocking factor `new_block_factor`.
-        std::string serialize(int new_data_tape_file, int new_block_factor) const;
+        // Generates the volume UUID on first write and stamps the new archive with
+        // the next write-generation (so it is non-const).
+        std::string serialize(int new_data_tape_file, int new_block_factor);
 
         std::vector<FileRec> flat() const; // all current files
+
+        // Per-volume identity (see the encryption design in tape.hpp): a random v4
+        // UUID generated once per tape, and a monotonic write-generation counter.
+        const std::string &volume_uuid() const { return volume_uuid_; }
+        uint64_t latest_generation() const;
 
         std::string source;
         std::string created;
@@ -93,6 +100,7 @@ namespace tapir
         {
             int manifest_tape_file = 0;
             int block_factor = 0;
+            uint64_t generation = 0; // write-generation this archive was written in
             std::string source, created;
         };
 
@@ -101,6 +109,7 @@ namespace tapir
 
         std::unique_ptr<Node> root_ = std::make_unique<Node>();
         std::map<int, Meta> meta_; // data_tape_file -> archive header metadata
+        std::string volume_uuid_;  // random v4 UUID, constant per tape; generated on first write
         bool dirty_ = false;
     };
 
