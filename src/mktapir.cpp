@@ -91,10 +91,9 @@ static int do_import(const std::string &dev, const std::vector<int> &files, int 
         {
             std::fprintf(stderr,
                          "mktapir: tape already has a tapir index — refusing full rescan.\n"
-                         "         A rescan would recover index-deleted files and pick the wrong\n"
-                         "         version of overwritten files (first on tape, not latest).\n"
-                         "         Use -f <tape-files> to add specific new tape files to the index,\n"
-                         "         or use tfsck for index recovery and rollback.\n");
+                         "         A rescan would resurrect index-deleted files whose data is still\n"
+                         "         on tape. Use -f <tape-files> to add specific new tape files to the\n"
+                         "         index, or use tfsck for index recovery and rollback.\n");
             return 1;
         }
         std::fprintf(stderr, "mktapir: building a new index from all data on the tape\n");
