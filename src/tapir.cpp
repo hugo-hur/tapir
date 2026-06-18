@@ -1,18 +1,14 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (C) 2026 Hugo Hurskainen
 
-// tapir.cpp — read/append/delete FUSE3 mount of a tar *tape* archive.
+// tapir.cpp — FUSE3 mount of a tar tape archive.
 //
-// Metadata is served from the in-RAM Index (read from the latest manifest tape
-// file at mount). Reading a file streams its data tape file to extract the
-// member (no per-file seek yet — see note below) and caches it. Appends are
-// staged in temp files and, at unmount, written as a NEW data tape file at EOD
-// followed by a fresh manifest. Deletes are index-only. The existing tape data
-// is never rewritten.
-//
-// NOTE: reads currently stream the whole data tape file to find a member. Usable
-// random access needs per-file start-block coordinates in the manifest (then
-// `mt seek`); that is the next step.
+// Serves a read/write filesystem backed by a tape drive. Metadata lives in an
+// in-RAM Index loaded from the latest on-tape manifest at mount time. Reads are
+// cached locally after the first tape stream. Writes go through a background
+// WriterThread (see writer.hpp): on file close the data is written to tape
+// asynchronously; a manifest is written at the first fsync or unmount. Deletes
+// are index-only; existing tape data is never rewritten.
 
 #ifndef _GNU_SOURCE
 #define _GNU_SOURCE 1
@@ -28,13 +24,13 @@
 #include "tape.hpp"
 #include "tar_io.hpp"
 #include "security.hpp"
+#include "writer.hpp"
 
 #include <cerrno>
 #include <clocale>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -83,9 +79,13 @@ namespace
         std::map<std::string, CacheEntry> cache;
         std::map<uint64_t, std::unique_ptr<WriteHandle>> writers;
         uint64_t next_h = 1;
+
+        std::unique_ptr<WriterThread> writer;
     };
 
     State *g = nullptr;
+
+    // ── helpers ───────────────────────────────────────────────────────────────────
 
     constexpr const char *member_name(const char *path)
     {
@@ -122,55 +122,16 @@ namespace
             st->st_blocks = static_cast<blkcnt_t>((n->size + 511) / 512);
         }
     }
-    void flush_index()
-    {
-        std::vector<OutFile> staged;
-        std::vector<Node *> staged_nodes; // parallel to staged — updated after write
-        std::function<void(Node *, const std::string &)> walk =
-            [&](Node *n, const std::string &prefix)
-        {
-            for (auto &[name, child] : n->children)
-            {
-                const std::string p = prefix.empty() ? name : prefix + "/" + name;
-                if (child->is_dir)
-                    walk(child.get(), p);
-                else if (child->staged)
-                {
-                    staged.push_back({p, child->staged->fd.get(), child->staged->size, child->mtime});
-                    staged_nodes.push_back(child.get());
-                }
-            }
-        };
-        walk(g->index.root(), "");
 
-        int dtf = 0;
-        std::function<bool(struct archive *)> writer;
-        if (!staged.empty())
-            writer = [&](struct archive *a)
-            { return tar_write_files(a, staged); };
-        const bool ok = g->tape->append(
-            g->block_factor, writer,
-            [&](int data_tape_file)
-            { return g->index.serialize(data_tape_file, g->block_factor); },
-            dtf);
-        if (!ok)
-        {
-            std::fprintf(stderr, "tapir: FAILED to write index/data to tape — changes not committed\n");
-            return;
-        }
-        std::fprintf(stderr, "tapir: committed %zu appended file(s); new data at tape file %d\n",
-                     staged.size(), dtf);
-        // Promote staged nodes to sealed: they now live on tape at dtf.
-        for (Node *n : staged_nodes)
-        {
-            n->data_tape_file = dtf;
-            n->block_factor = g->block_factor;
-            n->staged.reset();
-        }
-        g->index.mark_clean();
+    // Flush the index to tape. Temporarily releases `lk` while the writer thread
+    // works; reacquires before return. No-op if the index is not dirty.
+    static void sync_locked(std::unique_lock<std::mutex> &lk)
+    {
+        g->writer->sync(lk);
     }
 
     // ── FUSE ops ──────────────────────────────────────────────────────────────────
+
     void *t_init(struct fuse_conn_info *, struct fuse_config *cfg)
     {
         cfg->kernel_cache = 1;
@@ -180,24 +141,17 @@ namespace
         return nullptr;
     }
 
-    // Flush staged files + index to tape. Must be called with g->mtx held.
-    // Safe to call multiple times: flush_index() promotes staged nodes to sealed
-    // and clears the dirty flag, so a second call with no new writes is a no-op.
-    static void sync_locked()
-    {
-        if (g->index.dirty())
-            flush_index();
-    }
-
-    // Unmount: sync then drop read cache and any lingering write handles.
     void t_destroy(void *)
     {
         if (!g)
             return;
-        std::lock_guard<std::mutex> lk(g->mtx);
-        sync_locked();
-        g->cache.clear();
-        g->writers.clear();
+        {
+            std::unique_lock<std::mutex> lk(g->mtx);
+            sync_locked(lk);
+            g->cache.clear();
+            g->writers.clear();
+        } // lk released here — writer thread must not hold g->mtx when joined
+        g->writer.reset(); // request_stop() + join via ~jthread
     }
 
     int t_getattr(const char *path, struct stat *st, struct fuse_file_info *)
@@ -244,7 +198,6 @@ namespace
         return 0;
     }
 
-    // Creates emty file
     int t_create(const char *path, mode_t, struct fuse_file_info *fi)
     {
         std::lock_guard<std::mutex> lk(g->mtx);
@@ -267,7 +220,8 @@ namespace
         return 0;
     }
 
-    int t_write(const char *, const char *buf, size_t size, off_t off, struct fuse_file_info *fi)
+    int t_write(const char *, const char *buf, size_t size, off_t off,
+                struct fuse_file_info *fi)
     {
         std::lock_guard<std::mutex> lk(g->mtx);
         auto it = g->writers.find(fi->fh);
@@ -275,7 +229,7 @@ namespace
             return -EBADF;
         WriteHandle *h = it->second.get();
         if (static_cast<uint64_t>(off) != h->pos)
-            return -EINVAL; // sequential only: no partial writes
+            return -EINVAL; // sequential only
         const ssize_t w = pwrite(h->fd.get(), buf, size, off);
         if (w < 0)
             return -errno;
@@ -290,7 +244,6 @@ namespace
     {
         std::lock_guard<std::mutex> lk(g->mtx);
         Node *n = g->index.resolve(path);
-
         if (!n)
             return -ENOENT;
         if (n->is_dir)
@@ -302,7 +255,8 @@ namespace
         return -EPERM;
     }
 
-    int t_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *)
+    int t_read(const char *path, char *buf, size_t size, off_t offset,
+               struct fuse_file_info *)
     {
         std::lock_guard<std::mutex> lk(g->mtx);
         Node *n = g->index.resolve(path);
@@ -320,6 +274,8 @@ namespace
         }
         else if (n->staged)
         {
+            // File closed but writer thread still in flight: serve from temp fd.
+            // tar_write_files uses pread, so concurrent access is safe.
             fd = n->staged->fd.get();
             fsize = n->staged->size;
         }
@@ -330,7 +286,8 @@ namespace
             {
                 Fd nf;
                 uint64_t nsz;
-                if (!g->tape->read_member(n->data_tape_file, n->block_factor, member_name(path), nf, nsz))
+                if (!g->tape->read_member(n->data_tape_file, n->block_factor,
+                                          member_name(path), nf, nsz))
                     return -EIO;
                 it = g->cache.emplace(path, CacheEntry{std::move(nf), nsz}).first;
             }
@@ -347,10 +304,9 @@ namespace
         return r < 0 ? -errno : static_cast<int>(r);
     }
 
-    // Closing a file
-    // TODO: make 0 size files index only to allow adding data to them later.
-    // Alternatively make them 0 size file in the tar+index and show them as writable
-    // and when writing, adds a new entry to the underlaying tar file (and updat the index) that would overwrite the 0 sized one if raw tar is used to extract
+    // On file close, hand the temp fd to the WriterThread for async tape write.
+    // n->staged keeps the fd alive for t_read while the write is in progress.
+    // TODO: make 0-size files index-only to allow later data appends.
     int t_release(const char *, struct fuse_file_info *fi)
     {
         std::lock_guard<std::mutex> lk(g->mtx);
@@ -361,20 +317,25 @@ namespace
         if (h->node)
         {
             h->node->sha256 = h->sha.hex();
-            h->node->size = h->pos;
-            h->node->mtime = std::time(nullptr); // write-completion time; overridable via utimens
-            auto st = std::make_shared<Staged>();
-            st->size = h->pos;
-            st->fd = std::move(h->fd);
-            h->node->staged = std::move(st);
+            h->node->size   = h->pos;
+            h->node->mtime  = std::time(nullptr);
             h->node->writing = nullptr;
+
+            auto st = std::make_shared<Staged>();
+            st->size  = h->pos;
+            st->mtime = h->node->mtime;
+            st->fd    = std::move(h->fd);
+            h->node->staged = st;
+
+            const time_t snap_mtime = h->node->mtime; // snapshot before any utimens race
+            const std::string member{member_name(h->path.c_str())};
+            g->writer->enqueue_file(h->node, std::move(st), member, snap_mtime);
+            g->index.mark_dirty();
         }
         g->writers.erase(it);
-        g->index.mark_dirty();
         return 0;
     }
 
-    // Delete file
     int t_unlink(const char *path)
     {
         std::lock_guard<std::mutex> lk(g->mtx);
@@ -382,7 +343,6 @@ namespace
         return g->index.unlink_file(path) ? 0 : -ENOENT;
     }
 
-    // Create folder
     int t_mkdir(const char *path, mode_t)
     {
         std::lock_guard<std::mutex> lk(g->mtx);
@@ -391,7 +351,6 @@ namespace
         return g->index.make_dir(path) ? 0 : -ENOENT;
     }
 
-    // Delete folder
     int t_rmdir(const char *path)
     {
         std::lock_guard<std::mutex> lk(g->mtx);
@@ -405,9 +364,8 @@ namespace
         return g->index.remove_dir(path) ? 0 : -ENOTEMPTY;
     }
 
-    // mv(1) and touch(1) call utimensat() to set timestamps. Staged/writing nodes
-    // store the mtime in Node::mtime (authoritative for stat + the tar header at
-    // unmount). Sealed on-tape files are immutable.
+    // mv(1) and touch(1) call utimensat(). Staged/writing nodes apply the new
+    // mtime to Node + Staged; sealed on-tape files are immutable.
     static int t_utimens(const char *path, const struct timespec tv[2],
                          struct fuse_file_info *)
     {
@@ -416,7 +374,7 @@ namespace
         if (!n)
             return -ENOENT;
         if (!n->is_dir && !n->staged && !n->writing)
-            return -EPERM; // sealed on-tape file: truly immutable
+            return -EPERM;
         if (tv)
         {
             const time_t t = (tv[1].tv_nsec == UTIME_NOW)  ? std::time(nullptr)
@@ -431,35 +389,35 @@ namespace
 
     static int t_fsync(const char *, int, struct fuse_file_info *)
     {
-        std::lock_guard<std::mutex> lk(g->mtx);
-        sync_locked();
+        std::unique_lock<std::mutex> lk(g->mtx);
+        sync_locked(lk);
         return 0;
     }
 
     static int t_fsyncdir(const char *, int, struct fuse_file_info *)
     {
-        std::lock_guard<std::mutex> lk(g->mtx);
-        sync_locked();
+        std::unique_lock<std::mutex> lk(g->mtx);
+        sync_locked(lk);
         return 0;
     }
 
     const struct fuse_operations tapir_ops = {
-        .getattr = t_getattr,
-        .mkdir = t_mkdir,
-        .unlink = t_unlink,
-        .rmdir = t_rmdir,
+        .getattr  = t_getattr,
+        .mkdir    = t_mkdir,
+        .unlink   = t_unlink,
+        .rmdir    = t_rmdir,
         .truncate = t_truncate,
-        .open = t_open,
-        .read = t_read,
-        .write = t_write,
-        .release = t_release,
-        .fsync = t_fsync,
-        .readdir = t_readdir,
+        .open     = t_open,
+        .read     = t_read,
+        .write    = t_write,
+        .release  = t_release,
+        .fsync    = t_fsync,
+        .readdir  = t_readdir,
         .fsyncdir = t_fsyncdir,
-        .init = t_init,
-        .destroy = t_destroy,
-        .create = t_create,
-        .utimens = t_utimens,
+        .init     = t_init,
+        .destroy  = t_destroy,
+        .create   = t_create,
+        .utimens  = t_utimens,
     };
 
 } // namespace
@@ -485,27 +443,27 @@ int main(int argc, char **argv)
             device = a;
             continue;
         }
-        fargs.push_back(argv[i]); // mountpoint + fuse options
+        fargs.push_back(argv[i]);
     }
     if (device.empty() || fargs.size() < 2)
     {
         std::fprintf(stderr,
-                     "tapir — read/append/delete FUSE mount of a tar tape archive\n"
+                     "tapir -- read/append/delete FUSE mount of a tar tape archive\n"
                      "usage: %s <tape-device> <mountpoint> [-b N] [fuse options]\n",
                      argv[0]);
         return 2;
     }
     if (device.rfind("/dev/", 0) != 0)
     {
-        std::fprintf(stderr, "tapir: expected a tape device (…-nst), got %s\n", device.c_str());
+        std::fprintf(stderr, "tapir: expected a tape device (...-nst), got %s\n", device.c_str());
         return 2;
     }
 
     static State st;
     st.block_factor = bf;
     st.tape = std::make_unique<Tape>(device, bf);
-    st.uid = geteuid();
-    st.gid = getegid();
+    st.uid  = geteuid();
+    st.gid  = getegid();
     st.mtime = time(nullptr);
 
     std::string manifest_json;
@@ -525,8 +483,10 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    g = &st;
-    std::fprintf(stderr, "tapir: mounted %s — volume %s, generation %llu, %zu file(s)\n",
+    g = &st; // must precede WriterThread construction (thread reads g on first wake)
+    st.writer = std::make_unique<WriterThread>(*st.tape, bf, st.mtx, st.index);
+
+    std::fprintf(stderr, "tapir: mounted %s -- volume %s, generation %llu, %zu file(s)\n",
                  device.c_str(),
                  st.index.volume_uuid().c_str(),
                  static_cast<unsigned long long>(st.index.latest_generation()),
