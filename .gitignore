@@ -51,3 +51,4 @@ config.cache
 __pycache__/
 *.pyc
 src/test*
+!src/test_*.cpp
