@@ -7,7 +7,7 @@ libtapir_a_CPPFLAGS = $(LIBARCHIVE_CFLAGS) $(JSON_CFLAGS) $(CRYPTO_CFLAGS)
 bin_PROGRAMS = tapir tfsck mktapir
 
 # tapir: the FUSE mount (needs libfuse3)
-tapir_SOURCES  = tapir.cpp
+tapir_SOURCES  = tapir.cpp writer.cpp writer.hpp
 tapir_CPPFLAGS = $(LIBARCHIVE_CFLAGS) $(FUSE_CFLAGS) $(JSON_CFLAGS) $(CRYPTO_CFLAGS)
 tapir_LDADD    = libtapir.a $(LIBARCHIVE_LIBS) $(FUSE_LIBS) $(CRYPTO_LIBS)
 
