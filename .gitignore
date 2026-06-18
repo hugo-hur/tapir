@@ -50,3 +50,4 @@ config.cache
 *~
 __pycache__/
 *.pyc
+src/test*
