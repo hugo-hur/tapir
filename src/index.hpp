@@ -43,6 +43,7 @@ namespace tapir
         time_t mtime = 0; // per-file mtime; 0 means use the filesystem mount time
         int data_tape_file = 0;         // tape file holding this member's data
         int block_factor = 0;           // blocking factor of that tape file
+        int64_t block_number = -1;      // absolute tape block address; -1 = unknown (fall back to file-based seek)
         std::shared_ptr<Staged> staged; // non-null while data lives only in a temp file
         WriteHandle *writing = nullptr; // non-owning observer while open for writing
         std::map<std::string, std::unique_ptr<Node>> children;

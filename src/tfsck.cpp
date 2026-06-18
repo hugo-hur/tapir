@@ -46,6 +46,7 @@ using namespace tapir;
 static int do_verify(const std::string &device, int bf, bool verbose)
 {
     Tape tape(device, bf);
+    tape.set_verbose(verbose);
     std::string manifest_json;
     if (!tape.read_latest_manifest(manifest_json))
     {
@@ -84,7 +85,7 @@ static int do_verify(const std::string &device, int bf, bool verbose)
         std::printf("  tape file %d (block factor %d): %zu file(s)\n",
                     dtf, bf_of[dtf], want.size());
         const bool ok = tape.scan_archive(
-            dtf, bf_of[dtf],
+            dtf, bf_of[dtf], -1,
             [&](const std::string &name, const std::string &sha, uint64_t, time_t)
             {
                 seen.insert(name);

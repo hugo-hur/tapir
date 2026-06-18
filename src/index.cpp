@@ -211,6 +211,7 @@ namespace tapir
                 n->mtime = f.value("mtime", static_cast<time_t>(0));
                 n->data_tape_file = dtf;
                 n->block_factor = bf;
+                n->block_number = f.value("tape_block", static_cast<int64_t>(-1));
                 if (auto it = f.find("hashes"); it != f.end() && it->is_object())
                     if (auto hit = it->find("sha256sum"); hit != it->end())
                         n->sha256 = hit->get<std::string>();
@@ -309,6 +310,8 @@ namespace tapir
                 f["hashes"] = node->sha256.empty()
                                   ? json::object()
                                   : json::object({{"sha256sum", node->sha256}});
+                if (node->block_number >= 0)
+                    f["tape_block"] = node->block_number;
                 f["verified_with"] = nullptr;
                 arc.push_back(std::move(f));
             }
