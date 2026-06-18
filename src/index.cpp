@@ -188,7 +188,7 @@ namespace tapir
             Meta m;
             m.manifest_tape_file = h.value("manifest_tape_file", dtf + 1);
             m.block_factor = bf;
-            m.generation = h.value("write_generation", static_cast<uint64_t>(0));
+            m.generation = h.value("write_generation", 0ULL);
             m.source = h.value("source", std::string{});
             m.created = h.value("created", std::string{});
             meta_[dtf] = m;
@@ -211,7 +211,7 @@ namespace tapir
                 n->mtime = f.value("mtime", static_cast<time_t>(0));
                 n->data_tape_file = dtf;
                 n->block_factor = bf;
-                n->block_number = f.value("tape_block", static_cast<int64_t>(-1));
+                n->block_number = f.value("tape_block", -1LL);
                 if (auto it = f.find("hashes"); it != f.end() && it->is_object())
                     if (auto hit = it->find("sha256sum"); hit != it->end())
                         n->sha256 = hit->get<std::string>();
