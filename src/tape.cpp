@@ -9,6 +9,7 @@
 #include <cstdio>
 #include <vector>
 
+#include <cinttypes>
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <sys/mtio.h>
@@ -33,25 +34,33 @@ namespace tapir
     {
         if (verbose_)
             std::fprintf(stderr, "  tape: rewind to start of tape\n");
-        return ctl(MTREW, 1);
+        if (!ctl(MTREW, 1)) return false;
+        current_file_ = 0;
+        return true;
     }
     bool Tape::eod()
     {
         if (verbose_)
             std::fprintf(stderr, "  tape: space to end-of-data\n");
-        return ctl(MTEOM, 1); // the append point
+        if (!ctl(MTEOM, 1)) return false;
+        current_file_ = -1; // exact position unknown until file_number() is called
+        return true;
     }
     bool Tape::fsf(int n)
     {
         if (verbose_)
             std::fprintf(stderr, "  tape: forward over %d file mark(s)\n", n);
-        return ctl(MTFSF, n);
+        if (!ctl(MTFSF, n)) return false;
+        if (current_file_ >= 0) current_file_ += n;
+        return true;
     }
     bool Tape::bsf(int n)
     {
         if (verbose_)
             std::fprintf(stderr, "  tape: back over %d file mark(s)\n", n);
-        return ctl(MTBSF, n);
+        if (!ctl(MTBSF, n)) return false;
+        if (current_file_ >= 0) current_file_ -= n;
+        return true;
     }
 
     int Tape::file_number()
@@ -65,14 +74,63 @@ namespace tapir
         const int f = g.mt_fileno >= 0 ? static_cast<int>(g.mt_fileno) : 0;
         if (verbose_)
             std::fprintf(stderr, "  tape: now at file %d\n", f);
+        current_file_ = f; // update cached position
         return f;
+    }
+
+    int64_t Tape::block_number()
+    {
+        // MTIOCGET.mt_blkno is relative (within the current tape file) and is
+        // reset to 0 after each file mark — useless for absolute positioning.
+        // MTIOCPOS forces a SCSI READ POSITION command which returns the true
+        // absolute Logical Object Identifier (LOID) needed by MTSEEK / Locate(16).
+        // On drives that do not support READ POSITION (e.g. older LTO-1 hardware),
+        // the ioctl fails and we return -1; callers fall back to rewind+fsf.
+        Fd fd(::open(dev_.c_str(), O_RDONLY));
+        if (!fd.valid())
+            return -1;
+        struct mtpos pos{};
+        if (ioctl(fd.get(), MTIOCPOS, &pos) != 0)
+            return -1;
+        const int64_t b = static_cast<int64_t>(pos.mt_blkno);
+        if (verbose_)
+            std::fprintf(stderr, "  tape: absolute block %" PRId64 "\n", b);
+        return b;
     }
 
     // ── positioning ───────────────────────────────────────────────────────────────
     bool Tape::position_data(int tape_file)
     {
+        if (current_file_ >= 0 && current_file_ != tape_file)
+        {
+            const int delta = tape_file - current_file_;
+            if (delta > 0)
+            {
+                // Target is ahead: forward-space, no rewind needed.
+                if (verbose_)
+                    std::fprintf(stderr, "tape: fsf %d to reach tape file %d (currently at %d)\n",
+                                 delta, tape_file, current_file_);
+                return fsf(delta);
+            }
+            else
+            {
+                // Target is behind: bsf(|delta|+1) + fsf(1) without a full rewind.
+                // bsf(N+1) crosses N+1 filemarks backward, landing just before the
+                // filemark preceding tape_file; fsf(1) steps past it to file start.
+                const int back = -delta + 1;
+                if (verbose_)
+                    std::fprintf(stderr, "tape: bsf %d + fsf 1 to reach tape file %d (currently at %d)\n",
+                                 back, tape_file, current_file_);
+                return bsf(back) && fsf(1);
+            }
+        }
+        if (current_file_ == tape_file)
+            return true;
+
+        // Position unknown: fall back to full rewind + forward-space.
         if (verbose_)
-            std::fprintf(stderr, "tape: positioning to data tape file %d\n", tape_file);
+            std::fprintf(stderr, "tape: rewind + fsf %d to reach tape file %d (position unknown)\n",
+                         tape_file, tape_file);
         if (!rewind())
             return false;
         return tape_file > 0 ? fsf(tape_file) : true;
@@ -158,14 +216,21 @@ namespace tapir
     {
         if (!position_latest_manifest())
             return false;
-        return read_manifest_body(dev_, mbf_, out);
+        const bool ok = read_manifest_body(dev_, mbf_, out);
+        // Query actual post-read position from the driver. The st driver crosses the
+        // filemark on fd close, so we land at the start of the next tape file; that
+        // value lets position_data stream forward without rewinding.
+        file_number();
+        return ok;
     }
 
     bool Tape::read_manifest_at(int tape_file, std::string &out)
     {
         if (!position_data(tape_file))
             return false;
-        return read_manifest_body(dev_, mbf_, out);
+        const bool ok = read_manifest_body(dev_, mbf_, out);
+        file_number(); // capture post-read position (see read_latest_manifest)
+        return ok;
     }
 
     bool Tape::read_member(int tape_file, int block_factor, const std::string &member,
@@ -177,7 +242,11 @@ namespace tapir
         ArchiveReadPtr a = open_read(dev_, block_factor * 512, fd);
         if (!a)
             return false;
-        return tar_extract_member(a.get(), member, out_fd, out_size);
+        const bool ok = tar_extract_member(a.get(), member, out_fd, out_size);
+        // Single-member extract may stop mid-archive; position within tape file is
+        // unknown, so invalidate to force a proper reposition on the next access.
+        current_file_ = -1;
+        return ok;
     }
 
     bool Tape::scan_archive(int tape_file, int block_factor,
@@ -190,7 +259,9 @@ namespace tapir
         ArchiveReadPtr a = open_read(dev_, block_factor * 512, fd);
         if (!a)
             return false;
-        return tar_for_each_member(a.get(), cb, on_header);
+        const bool ok = tar_for_each_member(a.get(), cb, on_header);
+        file_number(); // capture post-read position (see read_latest_manifest)
+        return ok;
     }
 
     bool Tape::scan_archive_detect(int tape_file, int &detected,
@@ -217,6 +288,9 @@ namespace tapir
             }
             detected = static_cast<int>(n);
         }
+        // Raw read left us mid-file; current_file_ still says tape_file but we are
+        // no longer at its start. Invalidate so position_data does a proper reposition.
+        current_file_ = -1;
         if (verbose_)
             std::fprintf(stderr, "  tape: file %d physical block size = %d bytes\n", tape_file, detected);
 
@@ -236,6 +310,7 @@ namespace tapir
         if (!ok && verbose_)
             std::fprintf(stderr, "  tape: file %d: libarchive: %s\n",
                          tape_file, archive_error_string(a.get()));
+        file_number(); // capture post-read position (see read_latest_manifest)
         return ok;
     }
 
@@ -294,12 +369,15 @@ namespace tapir
     {
         if (!eod())
             return false;
-        out_tape_file = file_number();
+        out_tape_file = file_number(); // also updates current_file_
         if (out_tape_file < 0)
             return false;
-        return write_tape_file(mbf_,
-                               [&manifest_json](struct archive *a)
-                               { return tar_write_member(a, "manifest.json", manifest_json); });
+        if (!write_tape_file(mbf_,
+                             [&manifest_json](struct archive *a)
+                             { return tar_write_member(a, "manifest.json", manifest_json); }))
+            return false;
+        current_file_ = out_tape_file + 1;
+        return true;
     }
 
     bool Tape::overwrite_from_start(int block_factor,

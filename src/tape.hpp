@@ -58,7 +58,8 @@ namespace tapir
         bool eod();
         bool fsf(int n);
         bool bsf(int n);
-        int file_number(); // current tape file number (mt status), or -1 on error
+        int file_number();       // current tape file number (mt status), or -1 on error
+        int64_t block_number();  // current absolute block address (mt_blkno), or -1 on error
 
         // End-of-data survey in one pass: returns the number of tape files (or -1
         // on error) and sets `full` if the tape is at end-of-tape — i.e. there is
@@ -130,6 +131,7 @@ namespace tapir
         std::string dev_;
         int mbf_;
         bool verbose_ = false;
+        int current_file_ = -1; // tracked tape file number; -1 = unknown (avoids rewind when possible)
     };
 
 } // namespace tapir
