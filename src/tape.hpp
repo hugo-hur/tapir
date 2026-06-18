@@ -101,6 +101,20 @@ namespace tapir
                     const std::function<std::string(int data_tape_file)> &make_manifest,
                     int &out_data_tape_file);
 
+        // Primitives used by the background writer thread (tapir). Each call
+        // positions to EOD before writing, so they compose safely when serialised
+        // through a single-writer queue.
+
+        // Write one file as a single-member tar at EOD. Returns the tape file number
+        // of the written archive via `out_tape_file`.
+        bool write_data_at_eod(int block_factor,
+                               const std::function<bool(struct archive *)> &writer,
+                               int &out_tape_file);
+
+        // Write a manifest tar at EOD. Returns the tape file number via `out_tape_file`.
+        bool write_manifest_at_eod(const std::string &manifest_json,
+                                   int &out_tape_file);
+
         // Rewind to start of tape and write the manifest as tape file 0.
         // Used by mktapir --force to logically reformat a tape. On WORM tapes
         // this will be rejected by the drive if any data already exists.

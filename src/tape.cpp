@@ -278,6 +278,30 @@ namespace tapir
                                { return tar_write_member(a, "manifest.json", manifest); });
     }
 
+    bool Tape::write_data_at_eod(int block_factor,
+                                const std::function<bool(struct archive *)> &writer,
+                                int &out_tape_file)
+    {
+        if (!eod())
+            return false;
+        out_tape_file = file_number();
+        if (out_tape_file < 0)
+            return false;
+        return write_tape_file(block_factor, writer);
+    }
+
+    bool Tape::write_manifest_at_eod(const std::string &manifest_json, int &out_tape_file)
+    {
+        if (!eod())
+            return false;
+        out_tape_file = file_number();
+        if (out_tape_file < 0)
+            return false;
+        return write_tape_file(mbf_,
+                               [&manifest_json](struct archive *a)
+                               { return tar_write_member(a, "manifest.json", manifest_json); });
+    }
+
     bool Tape::overwrite_from_start(int block_factor,
                                     const std::function<std::string()> &make_manifest)
     {
