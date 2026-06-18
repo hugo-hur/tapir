@@ -394,13 +394,6 @@ namespace
         return 0;
     }
 
-    static int t_fsyncdir(const char *, int, struct fuse_file_info *)
-    {
-        std::unique_lock<std::mutex> lk(g->mtx);
-        sync_locked(lk);
-        return 0;
-    }
-
     const struct fuse_operations tapir_ops = {
         .getattr  = t_getattr,
         .mkdir    = t_mkdir,
@@ -413,7 +406,7 @@ namespace
         .release  = t_release,
         .fsync    = t_fsync,
         .readdir  = t_readdir,
-        .fsyncdir = t_fsyncdir,
+        .fsyncdir = t_fsync,
         .init     = t_init,
         .destroy  = t_destroy,
         .create   = t_create,
