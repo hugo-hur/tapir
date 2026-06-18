@@ -12,11 +12,39 @@ from the in-RAM index; content is read back through libarchive on demand.
 Inspired by LTFS but without partitioned tapes or a custom on-tape format.
 Works on any tape that Linux's `st` driver can address, including LTO WORM.
 
+> **Why I made this.** I have a load of old LTO-3 tapes here at home and wanted an
+> easy way to actually use them — to browse a tape and pull files off it like a
+> normal filesystem, instead of juggling `mt` seeks and `tar` by hand. tapir is
+> that: index the tape once, then mount it and `ls`/`cp`.
+
 ---
 
-## Tools
+## Usage and examples
 
-Built around a shared static library **libtapir** (cf. LTFS's `libltfs`):
+The tools are built around a shared static library **libtapir** (cf. LTFS's
+`libltfs`). A typical end-to-end session with an existing tape of tar archives:
+
+```sh
+# 1. Index the tar archives already on the tape (one forward scan):
+mktapir import /dev/nst0
+
+# 2. Mount the tape as a read/append filesystem:
+mkdir -p /mnt/tape
+tapir /dev/nst0 /mnt/tape
+
+ls -l /mnt/tape            # served from the in-RAM index (instant)
+cp /mnt/tape/report.pdf .  # streamed from tape on demand
+cp newfile.txt /mnt/tape   # staged now, written back to tape on sync/unmount
+
+sync /mnt/tape             # flush staged files + a fresh index to tape
+fusermount3 -u /mnt/tape   # unmount (also flushes)
+
+# 3. Later, check everything still matches its checksums:
+tfsck /dev/nst0
+```
+
+`/dev/nst0` is the no-rewind tape device; substitute your own (e.g. a stable
+`/dev/tape/by-id/...-nst` symlink).
 
 ### `tapir` — FUSE mount
 
@@ -26,13 +54,14 @@ fusermount3 -u <mountpoint>
 ```
 
 - Reads the latest manifest from EOT (identified by the tapir PAX magic — see
-  *Index identification* below), serves the file tree via FUSE3. Refuses to mount
-  a tape whose index predates the magic until it is converted with
+  *Tape layout and index format* below), serves the file tree via FUSE3. Refuses
+  to mount a tape whose index predates the magic until it is converted with
   `tfsck --upgrade-manifest`.
 - **Append**: copy files in; they are staged in a temp file and written to tape
   asynchronously. All files written between two syncs are batched into a single
   multi-member tar at EOD. `sync` (or unmount) closes that tar and writes a fresh
-  cumulative index as the next tape file.
+  cumulative index as the next tape file. (See *Write-back caching* for the full
+  staging/flush model.)
 - **Delete**: index-only — the data remains on tape (WORM-safe).
 - **mtime**: preserved through the tar header; `touch`/`mv -p` work correctly.
 - **permissions**: the tar header mode is preserved and reported by `stat`.
@@ -147,56 +176,9 @@ tfsck --upgrade-manifest <device-nst>
 Reads the manifest at the end of tape even if it predates the tapir PAX magic
 header (filename match only) and rewrites it at EOD with the magic added. This
 is the conversion step required before `tapir` will mount a tape whose index was
-written by an older build (see *Index identification* below).
+written by an older build (see *Tape layout and index format* below).
 
 All `tfsck` modes reject unknown options instead of silently ignoring them.
-
----
-
-## Tape layout and index format
-
-```
-tape file 0  — data tar (N members — all files written before first sync)
-tape file 1  — manifest tar      (cumulative index)
-tape file 2  — data tar (M members — all files written before second sync)
-tape file 3  — manifest tar      (cumulative — covers all sessions)
-...
-```
-
-**Write batching:** everything written between two `sync` calls (or between mount
-and the first sync) is accumulated into a single multi-member PAX tar. `sync`
-closes the tar (writing end-of-archive blocks + the filemark) and immediately
-appends the manifest as the next tape file. This keeps the filemark count low and
-lets `tfsck` stream the tape without rewinding between files.
-
-**Per-member seeking:** the manifest records each file's tape file number and its
-physical-block offset within that tape file (`tape_block`). On read, `tapir` uses
-FSF to reach the tape file and MTFSR to skip directly to the member's tar header
-block — no need to read past preceding members in the same tar.
-
-Each manifest is cumulative and supersedes the previous one. On WORM tapes all
-prior manifests are preserved and recoverable via `tfsck --rollback` /
-`--rollback-to`. The per-file record also carries the tar header mode (`perm`).
-See [docs/index-format.md](docs/index-format.md) for the full JSON schema.
-Manifest tar is always the last file on tape, so mounting is fast (eod → back 1 file → read).
-
-**Index identification:** every manifest member carries a PAX extended-header
-xattr `user.tapir.magic = tapir-index-v1`. `tapir` and `tfsck` treat a tape file
-as a tapir index only when its sole member is `manifest.json` **and** carries
-this magic. A plain data tar that happens to contain a `manifest.json` is
-therefore never mistaken for an index, and a foreign tar appended after the index
-does not silently shadow it — it simply fails the magic check. Indexes written
-before the magic existed are rejected on mount; convert them in place with
-`tfsck --upgrade-manifest`.
-
----
-
-## WORM cartridge support
-
-All writes go through `append()` (or `overwrite_from_start()` for `--force`),
-which positions to EOD before opening the device — existing data is never
-overwritten. WORM drives enforce this at the hardware level. Reads and backward
-positioning (manifest lookup, import scanning) are unrestricted.
 
 ---
 
@@ -237,6 +219,99 @@ make check        # run unit tests
 ./configure --enable-cxx23=no          # force the C++20 baseline
 PKG_CONFIG_PATH=/opt/lib/pkgconfig ./configure
 ```
+
+---
+
+## In-depth information
+
+How the filesystem behaves under the hood — durability model, on-tape format, and
+WORM handling.
+
+### Write-back caching, staging, and read-after-write
+
+`tapir`'s write path is a **write-back (write-behind) cache** in front of the
+tape: writes are acknowledged as soon as they reach RAM, and the slow tape is
+updated asynchronously.
+
+- **Staging.** A newly written file is buffered in an anonymous temp file under
+  `/tmp`, created with `mkstemp` + an immediate `unlink` — it keeps an open file
+  descriptor but no directory entry, so it has no name anything else can reach and
+  it self-destructs when the fd closes (including on crash). On most systems
+  `/tmp` is `tmpfs`, so staged data lives in RAM/swap rather than on disk.
+- **Asynchronous flush.** `close()` returns immediately, handing the staged file
+  to a background writer thread, which streams the bytes into the open data tar at
+  end-of-tape. The **manifest write is the commit point** — only `fsync`, `sync`,
+  or unmount closes that tar and writes the new cumulative index.
+- **Read-after-write.** While a just-closed file is still staged (data not yet on
+  tape, or on tape but not yet committed by a manifest), `read()` serves it
+  straight from the temp fd. Members already read back *from* tape are held in a
+  separate in-RAM read cache.
+- **Concurrency.** The staged temp fd is shared between the FUSE reader and the
+  writer thread; both use positional `pread` (explicit offset, never touching the
+  shared file position), so a file can be read at the same instant it is being
+  streamed to tape without either side disturbing the other.
+
+Consequences of the write-back model worth knowing:
+
+- **Durability follows `fsync`.** Data written but not yet `fsync`/`sync`/
+  unmounted is not durably indexed. After a crash, any bytes the writer already
+  streamed sit past the last valid manifest in an unterminated tape file —
+  invisible on the next mount (the previous good manifest loads) and recoverable,
+  if at all, only via `tfsck` / `mktapir import`. This is the standard write-back
+  trade-off, with the manifest as the commit record.
+- **No periodic or pressure-driven flush.** Unlike the kernel page cache, there is
+  no timer- or memory-pressure-triggered write-back and no dirty-ratio
+  backpressure. Dirty data is flushed only on the events above, and the writer
+  queue is unbounded — a producer faster than the drive grows the queue and the
+  set of open staged temp files, bounded only by `/tmp` capacity.
+- **Append-only backing store.** The tape is never overwritten in place.
+  Overwriting a file appends a new copy and a new manifest generation (last write
+  wins in the index); deletes are index-only. Superseded/orphaned data lingers and
+  is recoverable via `tfsck --rollback` / `--rollback-to`. In effect tapir is a
+  log-structured, generationed store with a write-back front end.
+
+### Tape layout and index format
+
+```
+tape file 0  — data tar (N members — all files written before first sync)
+tape file 1  — manifest tar      (cumulative index)
+tape file 2  — data tar (M members — all files written before second sync)
+tape file 3  — manifest tar      (cumulative — covers all sessions)
+...
+```
+
+**Write batching:** everything written between two `sync` calls (or between mount
+and the first sync) is accumulated into a single multi-member PAX tar. `sync`
+closes the tar (writing end-of-archive blocks + the filemark) and immediately
+appends the manifest as the next tape file. This keeps the filemark count low and
+lets `tfsck` stream the tape without rewinding between files.
+
+**Per-member seeking:** the manifest records each file's tape file number and its
+physical-block offset within that tape file (`tape_block`). On read, `tapir` uses
+FSF to reach the tape file and MTFSR to skip directly to the member's tar header
+block — no need to read past preceding members in the same tar.
+
+Each manifest is cumulative and supersedes the previous one. On WORM tapes all
+prior manifests are preserved and recoverable via `tfsck --rollback` /
+`--rollback-to`. The per-file record also carries the tar header mode (`perm`).
+See [docs/index-format.md](docs/index-format.md) for the full JSON schema.
+Manifest tar is always the last file on tape, so mounting is fast (eod → back 1 file → read).
+
+**Index identification:** every manifest member carries a PAX extended-header
+xattr `user.tapir.magic = tapir-index-v1`. `tapir` and `tfsck` treat a tape file
+as a tapir index only when its sole member is `manifest.json` **and** carries
+this magic. A plain data tar that happens to contain a `manifest.json` is
+therefore never mistaken for an index, and a foreign tar appended after the index
+does not silently shadow it — it simply fails the magic check. Indexes written
+before the magic existed are rejected on mount; convert them in place with
+`tfsck --upgrade-manifest`.
+
+### WORM cartridge support
+
+All writes go through `append()` (or `overwrite_from_start()` for `--force`),
+which positions to EOD before opening the device — existing data is never
+overwritten. WORM drives enforce this at the hardware level. Reads and backward
+positioning (manifest lookup, import scanning) are unrestricted.
 
 ---
 
