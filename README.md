@@ -25,13 +25,20 @@ tapir <device-nst> <mountpoint> [-b N] [fuse options]
 fusermount3 -u <mountpoint>
 ```
 
-- Reads the latest manifest from EOT, serves the file tree via FUSE3.
+- Reads the latest manifest from EOT (identified by the tapir PAX magic — see
+  *Index identification* below), serves the file tree via FUSE3. Refuses to mount
+  a tape whose index predates the magic until it is converted with
+  `tfsck --upgrade-manifest`.
 - **Append**: copy files in; they are staged in a temp file and written to tape
   asynchronously. All files written between two syncs are batched into a single
   multi-member tar at EOD. `sync` (or unmount) closes that tar and writes a fresh
   cumulative index as the next tape file.
 - **Delete**: index-only — the data remains on tape (WORM-safe).
 - **mtime**: preserved through the tar header; `touch`/`mv -p` work correctly.
+- **permissions**: the tar header mode is preserved and reported by `stat`.
+  Sealed (already-on-tape) files display with their write bits masked off
+  (read/execute kept), reflecting their immutability; `chmod` succeeds only on a
+  file still being written and bakes the new mode into its tar header at flush.
 - **fsync**: `sync <mountpoint>` or application `fsync` flushes staged files and
   the index to tape immediately without unmounting.
 - `-b N` sets the manifest blocking factor (×512 bytes, default 512).
@@ -61,10 +68,14 @@ mktapir import <device-nst> [-f <tape-files>] [-b <block-factor>] [-m <manifest-
 ```
 
 Scans existing tar archives on tape and writes a cumulative index at EOD.
-- No `-f`: scans every data tape file (refuses if a tapir index already exists —
-  a rescan would recover deleted files and pick the wrong version of overwritten
-  ones; use `tfsck` for recovery instead).
+- No `-f`: scans every data tape file (refuses if a tapir index already exists,
+  since a rescan would resurrect index-deleted files whose data is still on tape;
+  use `tfsck` for recovery instead).
 - `-f 0,2,5`: index only the listed tape files and merge into the existing index.
+  Refuses if one of the listed files is itself a tapir index.
+- When the same path occurs more than once across the imported tape files, the
+  **last occurrence wins** (matching `tar -x` over an appended archive); the
+  earlier copies stay on tape as orphaned data.
 - Block size is auto-detected per tape file; `-b` is a fallback/override.
 - `-v`: prints each filename as soon as its header is read, then SHA-256 + size
   after hashing — useful for progress on large archives.
@@ -85,12 +96,18 @@ to the existing index. Accepts compressed archives (`.tar.gz`, `.tar.xz`, etc.).
 **Verify** checksums against the index:
 
 ```sh
-tfsck <device-nst> [-b N] [-v]
+tfsck <device-nst> [-b N] [-m N] [-v]
 ```
 
 Streams every indexed data tape file, recomputes SHA-256, and reports
-OK / FAIL / ORPHAN (deleted-but-retained) per file. `-v` prints each member
-name on header read, then the result after hashing.
+OK / FAIL / ORPHAN (deleted-but-retained) per file. `-b` is the data block
+factor, `-m` the manifest block factor. `-v` prints each member's name and
+physical-block offset on header read, then the result after hashing.
+
+Verify doubles as a re-indexer: any manifest entry missing its per-member block
+offset (an index written before block tracking, or built by `mktapir import`)
+has the offset filled in from the live scan. If any were filled, a refreshed
+manifest is written at EOD so later mounts get fast per-member seeking.
 
 **List all index generations on tape**:
 
@@ -110,6 +127,29 @@ tfsck --rollback-to <generation> <device-nst>
 Finds the manifest with the given write-generation and writes it verbatim as a
 new tape file at EOD, making it the new authoritative index. All original data
 tape files remain untouched. Refuses if the tape is full.
+
+**Roll back to the previous index** (one-step shortcut):
+
+```sh
+tfsck --rollback <device-nst>
+```
+
+Writes a copy of the second-to-last manifest at EOD, making the previous
+generation authoritative again — the quick "undo my last session" form of
+`--rollback-to`. Refuses if there are fewer than two manifests on tape.
+
+**Upgrade a pre-magic manifest**:
+
+```sh
+tfsck --upgrade-manifest <device-nst>
+```
+
+Reads the manifest at the end of tape even if it predates the tapir PAX magic
+header (filename match only) and rewrites it at EOD with the magic added. This
+is the conversion step required before `tapir` will mount a tape whose index was
+written by an older build (see *Index identification* below).
+
+All `tfsck` modes reject unknown options instead of silently ignoring them.
 
 ---
 
@@ -135,9 +175,19 @@ FSF to reach the tape file and MTFSR to skip directly to the member's tar header
 block — no need to read past preceding members in the same tar.
 
 Each manifest is cumulative and supersedes the previous one. On WORM tapes all
-prior manifests are preserved and recoverable via `tfsck --rollback-to`. See
-[docs/index-format.md](docs/index-format.md) for the full JSON schema.
+prior manifests are preserved and recoverable via `tfsck --rollback` /
+`--rollback-to`. The per-file record also carries the tar header mode (`perm`).
+See [docs/index-format.md](docs/index-format.md) for the full JSON schema.
 Manifest tar is always the last file on tape, so mounting is fast (eod → back 1 file → read).
+
+**Index identification:** every manifest member carries a PAX extended-header
+xattr `user.tapir.magic = tapir-index-v1`. `tapir` and `tfsck` treat a tape file
+as a tapir index only when its sole member is `manifest.json` **and** carries
+this magic. A plain data tar that happens to contain a `manifest.json` is
+therefore never mistaken for an index, and a foreign tar appended after the index
+does not silently shadow it — it simply fails the magic check. Indexes written
+before the magic existed are rejected on mount; convert them in place with
+`tfsck --upgrade-manifest`.
 
 ---
 
