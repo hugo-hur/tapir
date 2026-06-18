@@ -39,7 +39,7 @@ fusermount3 -u <mountpoint>
 **Initialise a blank tape** (default command):
 
 ```sh
-mktapir <device-nst> [-m <manifest-bf>]
+mktapir <device-nst> [-m <manifest-block-factor>]
 ```
 
 Writes a fresh empty tapir index on a blank tape. Refuses if the tape already
@@ -124,6 +124,7 @@ tape file 3  — manifest tar      (cumulative — covers all sessions)
 Each manifest is cumulative and supersedes the previous one. On WORM tapes all
 prior manifests are preserved and recoverable. See
 [docs/index-format.md](docs/index-format.md) for the full JSON schema.
+Manifest tar is always the last file on tape, so mounting is fast (eod -> back 1 file -> read).
 
 ---
 
