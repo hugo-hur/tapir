@@ -75,13 +75,16 @@ namespace tapir
         // and rollback). Returns false if the tape file is not a tapir manifest.
         bool read_manifest_at(int tape_file, std::string &out);
 
-        // Extract one member from the data archive at `tape_file` (streams the tar).
-        bool read_member(int tape_file, int block_factor, const std::string &member,
-                         Fd &out_fd, uint64_t &out_size);
+        // Extract one member from the data archive at `tape_file`.
+        // `block_num` >= 0 uses a fast MTSEEK to the absolute block address;
+        // pass -1 to fall back to rewind + forward-space (older manifests, tfsck).
+        bool read_member(int tape_file, int block_factor, int64_t block_num,
+                         const std::string &member, Fd &out_fd, uint64_t &out_size);
 
         // Stream every member of the data archive at `tape_file`, calling cb per file.
         // on_header(name) fires immediately on header read; cb fires after data is hashed.
-        bool scan_archive(int tape_file, int block_factor,
+        // `block_num` >= 0 uses MTSEEK (same semantics as read_member).
+        bool scan_archive(int tape_file, int block_factor, int64_t block_num,
                           const std::function<void(const std::string &, const std::string &, uint64_t, time_t)> &cb,
                           const std::function<void(const std::string &)> &on_header = {});
 
@@ -102,15 +105,20 @@ namespace tapir
                     const std::function<std::string(int data_tape_file)> &make_manifest,
                     int &out_data_tape_file);
 
-        // Primitives used by the background writer thread (tapir). Each call
-        // positions to EOD before writing, so they compose safely when serialised
-        // through a single-writer queue.
+        // Primitives used by the background writer thread (tapir). The writer
+        // accumulates files into one open tape file between syncs; on sync it
+        // closes the tape file and appends a manifest as the next tape file.
 
-        // Write one file as a single-member tar at EOD. Returns the tape file number
-        // of the written archive via `out_tape_file`.
-        bool write_data_at_eod(int block_factor,
-                               const std::function<bool(struct archive *)> &writer,
+        // Open a new tape file at EOD for streaming multi-member writes.
+        // The caller receives an open ArchiveWritePtr (write to it with
+        // tar_write_files) and the write Fd (needed for mt_blkno queries).
+        // Call note_write_done() + close the Fd after archive_write_close().
+        bool open_write_at_eod(int block_factor,
+                               ArchiveWritePtr &out_ar, Fd &out_fd,
                                int &out_tape_file);
+
+        // Update current_file_ tracking after the caller closes a write Fd.
+        void note_write_done(int tape_file);
 
         // Write a manifest tar at EOD. Returns the tape file number via `out_tape_file`.
         bool write_manifest_at_eod(const std::string &manifest_json,
@@ -125,6 +133,11 @@ namespace tapir
     private:
         bool position_latest_manifest();
         bool position_data(int tape_file);
+        // FSF to tape_file, then MTFSR by block_within_file (0 = no FSR).
+        // block_within_file is the physical-block offset of the member's tar header
+        // within the tape file, as recorded in Node::block_number at write time.
+        bool seek_to(int tape_file, int64_t block_within_file);
+        bool fsr(int64_t n); // MTFSR within the current tape file
         bool write_tape_file(int block_factor, const std::function<bool(struct archive *)> &writer);
         bool ctl(short op, int count); // st driver MTIOCTOP wrapper (<sys/mtio.h>)
 

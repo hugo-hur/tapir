@@ -10,11 +10,16 @@
 
 #pragma once
 
+#include "raii.hpp"
+
+#include <archive.h>
+
 #include <condition_variable>
 #include <deque>
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <thread>
 #include <ctime>
@@ -57,6 +62,19 @@ private:
     std::condition_variable_any queue_cv_;
     std::deque<std::function<void()>> queue_;
     std::jthread             thread_;
+
+    // All files written between two sync() calls accumulate into one tape file.
+    // The archive is opened on the first enqueue_file after a sync and kept open
+    // until sync closes it. Field order matters for destruction: ar is destroyed
+    // before fd so archive_write_free (end-of-archive blocks) runs before the fd
+    // close that causes the st driver to write the filemark.
+    struct OpenWrite {
+        Fd              fd;                  // must outlive ar (filemark written on fd close)
+        ArchiveWritePtr ar;                  // freed first → writes end-of-archive blocks
+        int             tape_file   = -1;
+        int64_t         next_member_block = 0; // within-file block offset for the next member
+    };
+    std::optional<OpenWrite> open_write_;
 
     enum class WaitResult { HasWork, Stopping };
 

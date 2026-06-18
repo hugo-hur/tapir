@@ -136,6 +136,28 @@ namespace tapir
         return tape_file > 0 ? fsf(tape_file) : true;
     }
 
+    bool Tape::fsr(int64_t n)
+    {
+        if (verbose_)
+            std::fprintf(stderr, "  tape: fsr %" PRId64 " record(s) within tape file\n", n);
+        return ctl(MTFSR, static_cast<int>(n));
+    }
+
+    bool Tape::seek_to(int tape_file, int64_t block_within_file)
+    {
+        if (!position_data(tape_file))
+            return false;
+        if (block_within_file > 0)
+        {
+            if (verbose_)
+                std::fprintf(stderr, "tape: fsr %" PRId64 " to member within tape file %d\n",
+                             block_within_file, tape_file);
+            if (!fsr(block_within_file))
+                return false;
+        }
+        return true;
+    }
+
     // Latest manifest is the last tape file. From EOD, the manifest sits one file
     // back: cross 2 filemarks back, then forward 1 to land on its first block.
     bool Tape::position_latest_manifest()
@@ -233,10 +255,10 @@ namespace tapir
         return ok;
     }
 
-    bool Tape::read_member(int tape_file, int block_factor, const std::string &member,
-                           Fd &out_fd, uint64_t &out_size)
+    bool Tape::read_member(int tape_file, int block_factor, int64_t block_num,
+                           const std::string &member, Fd &out_fd, uint64_t &out_size)
     {
-        if (!position_data(tape_file))
+        if (!seek_to(tape_file, block_num))
             return false;
         Fd fd;
         ArchiveReadPtr a = open_read(dev_, block_factor * 512, fd);
@@ -249,11 +271,11 @@ namespace tapir
         return ok;
     }
 
-    bool Tape::scan_archive(int tape_file, int block_factor,
+    bool Tape::scan_archive(int tape_file, int block_factor, int64_t block_num,
                             const std::function<void(const std::string &, const std::string &, uint64_t, time_t)> &cb,
                             const std::function<void(const std::string &)> &on_header)
     {
-        if (!position_data(tape_file))
+        if (!seek_to(tape_file, block_num))
             return false;
         Fd fd;
         ArchiveReadPtr a = open_read(dev_, block_factor * 512, fd);
@@ -353,16 +375,38 @@ namespace tapir
                                { return tar_write_member(a, "manifest.json", manifest); });
     }
 
-    bool Tape::write_data_at_eod(int block_factor,
-                                const std::function<bool(struct archive *)> &writer,
-                                int &out_tape_file)
+    bool Tape::open_write_at_eod(int block_factor,
+                                ArchiveWritePtr &out_ar, Fd &out_fd, int &out_tape_file)
     {
         if (!eod())
             return false;
-        out_tape_file = file_number();
+        out_tape_file = file_number(); // also updates current_file_
         if (out_tape_file < 0)
             return false;
-        return write_tape_file(block_factor, writer);
+
+        const int bsize = block_factor * 512;
+        Fd fd(::open(dev_.c_str(), O_WRONLY));
+        if (!fd.valid())
+            return false;
+
+        ArchiveWritePtr a(archive_write_new());
+        archive_write_set_format_pax_restricted(a.get());
+        archive_write_set_bytes_per_block(a.get(), bsize);
+        archive_write_set_bytes_in_last_block(a.get(), bsize);
+        if (archive_write_open_fd(a.get(), fd.get()) != ARCHIVE_OK)
+            return false;
+
+        if (verbose_)
+            std::fprintf(stderr, "  tape: opened tape file %d for streaming writes\n", out_tape_file);
+
+        out_ar = std::move(a);
+        out_fd = std::move(fd);
+        return true;
+    }
+
+    void Tape::note_write_done(int tape_file)
+    {
+        current_file_ = tape_file + 1;
     }
 
     bool Tape::write_manifest_at_eod(const std::string &manifest_json, int &out_tape_file)

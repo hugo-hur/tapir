@@ -6,6 +6,9 @@
 #include "tape.hpp"
 #include "tar_io.hpp"
 
+#include <archive.h>
+
+#include <cinttypes>
 #include <cstdio>
 #include <future>
 
@@ -76,31 +79,49 @@ void WriterThread::enqueue_file(Node *node, std::shared_ptr<Staged> data,
 {
     push([node, data = std::move(data), path = std::move(path), mtime, this]()
     {
-        // Tape I/O runs here, outside any lock.
-        int out_dtf = 0;
-        OutFile of{path, data->fd.get(), data->size, mtime};
-        const bool ok = tape_.write_data_at_eod(
-            block_factor_,
-            [&of](struct archive *a) { return tar_write_files(a, {of}); },
-            out_dtf);
+        // Open a new tape file if none is currently in progress.
+        if (!open_write_) {
+            ArchiveWritePtr ar;
+            Fd fd;
+            int tape_file = -1;
+            if (!tape_.open_write_at_eod(block_factor_, ar, fd, tape_file)) {
+                std::lock_guard<std::mutex> gl(state_mtx_);
+                std::fprintf(stderr, "tapir: writer: FAILED to open tape for writing '%s'\n",
+                             path.c_str());
+                node->staged.reset();
+                return;
+            }
+            open_write_.emplace(OpenWrite{std::move(fd), std::move(ar), tape_file, 0});
+        }
 
-        // Brief lock to update node state. t_read serves from n->staged until
-        // this point; after staged.reset() it falls through to the tape cache.
+        // Record the physical-block offset of this member's tar header.
+        // archive_filter_bytes(-1) returns bytes actually flushed to the tape fd so
+        // far; dividing by the physical block size gives the block number where the
+        // next archive_write_header will land (possibly sharing a block with earlier
+        // small members). seek_to() uses MTFSR to skip to this block at read time.
+        const int64_t bsize = static_cast<int64_t>(block_factor_) * 512;
+        const int64_t this_block = open_write_->next_member_block;
+
+        OutFile of{path, data->fd.get(), data->size, mtime};
+        const bool ok = tar_write_files(open_write_->ar.get(), {of});
+
+        if (ok) {
+            // Update next_member_block from bytes flushed to tape after this write.
+            const la_int64_t flushed = archive_filter_bytes(open_write_->ar.get(), -1);
+            open_write_->next_member_block = (flushed >= 0) ? flushed / bsize : -1;
+        }
+
         std::lock_guard<std::mutex> gl(state_mtx_);
-        if (ok)
-        {
-            node->data_tape_file = out_dtf;
+        if (ok) {
+            node->data_tape_file = open_write_->tape_file;
             node->block_factor   = block_factor_;
-            std::fprintf(stderr, "tapir: writer: wrote '%s' -> tape file %d\n",
-                         path.c_str(), out_dtf);
+            node->block_number   = this_block;
+            std::fprintf(stderr, "tapir: writer: wrote '%s' -> tape file %d block %" PRId64 "\n",
+                         path.c_str(), open_write_->tape_file, this_block);
+        } else {
+            std::fprintf(stderr, "tapir: writer: FAILED to write '%s'\n", path.c_str());
         }
-        else
-        {
-            std::fprintf(stderr,
-                         "tapir: writer: FAILED to write '%s' -- data lost on tape error\n",
-                         path.c_str());
-        }
-        node->staged.reset(); // drop temp fd; subsequent reads go to tape
+        node->staged.reset();
     });
 }
 
@@ -116,9 +137,18 @@ void WriterThread::sync(std::unique_lock<std::mutex> &lk)
 
     push([sp, this]()
     {
-        // Serialize while holding state_mtx_. All prior enqueue_file() tasks
-        // have already run (queue is FIFO), so every node has data_tape_file
-        // set and staged == nullptr.
+        // Close the open tape file before writing the manifest. All prior
+        // enqueue_file() tasks have already run (queue is FIFO).
+        // archive_write_close writes end-of-archive blocks; resetting open_write_
+        // destroys ar (archive_write_free, idempotent) then fd (filemark written).
+        if (open_write_) {
+            const int tf = open_write_->tape_file;
+            archive_write_close(open_write_->ar.get());
+            open_write_.reset(); // ar freed (no-op), then fd closed → filemark
+            tape_.note_write_done(tf);
+            std::fprintf(stderr, "tapir: writer: closed tape file %d\n", tf);
+        }
+
         std::string manifest;
         {
             std::lock_guard<std::mutex> gl(state_mtx_);
@@ -137,7 +167,7 @@ void WriterThread::sync(std::unique_lock<std::mutex> &lk)
         {
             std::fprintf(stderr, "tapir: writer: FAILED to write manifest to tape\n");
         }
-        sp->set_value(); // wake WriterThread::sync() whether or not write succeeded
+        sp->set_value();
     });
 
     lk.unlock(); // release state_mtx_ so the writer thread can acquire it

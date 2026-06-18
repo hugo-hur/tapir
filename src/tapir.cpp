@@ -286,7 +286,7 @@ namespace
             {
                 Fd nf;
                 uint64_t nsz;
-                if (!g->tape->read_member(n->data_tape_file, n->block_factor,
+                if (!g->tape->read_member(n->data_tape_file, n->block_factor, n->block_number,
                                           member_name(path), nf, nsz))
                     return -EIO;
                 it = g->cache.emplace(path, CacheEntry{std::move(nf), nsz}).first;
