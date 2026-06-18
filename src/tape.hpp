@@ -66,10 +66,16 @@ namespace tapir
         // no room to append an index (e.g. a tar that spans onto another tape).
         int survey(bool &full);
 
-        // Read manifest.json from the latest manifest (the last tape file). Fast:
-        // only the first member is inspected, so a trailing *data* tape file is
-        // rejected without scanning it.
+        // Read manifest.json from the latest manifest (the last tape file). Requires
+        // the tapir PAX magic xattr — rejects tape files that carry manifest.json
+        // without it (old-format indexes and unrelated tars). Fast: only the first
+        // member is inspected.
         bool read_latest_manifest(std::string &out);
+
+        // Like read_latest_manifest but accepts old-format manifests that lack the
+        // magic xattr (filename match only). Used by tfsck --upgrade-manifest and the
+        // tapir mount-time warning probe — not for normal operation.
+        bool read_latest_manifest_legacy(std::string &out);
 
         // Read manifest.json from a specific tape file (for generation enumeration
         // and rollback). Returns false if the tape file is not a tapir manifest.
@@ -85,15 +91,28 @@ namespace tapir
         // on_header(name) fires immediately on header read; cb fires after data is hashed.
         // `block_num` >= 0 uses MTSEEK (same semantics as read_member).
         bool scan_archive(int tape_file, int block_factor, int64_t block_num,
-                          const std::function<void(const std::string &, const std::string &, uint64_t, time_t)> &cb,
-                          const std::function<void(const std::string &)> &on_header = {});
+                          const std::function<void(const std::string &, const std::string &,
+                                                   uint64_t, time_t, mode_t)> &cb,
+                          const std::function<void(const std::string &, bool is_tapir_index)> &on_header = {});
+
+        // Like scan_archive but also reports the physical-block offset of each member's
+        // tar header within the tape file. Used by tfsck to fill tape_block entries for
+        // archives written before per-member block tracking was added.
+        bool scan_archive_with_blocks(
+            int tape_file, int block_factor,
+            const std::function<void(const std::string &name, int64_t block,
+                                     const std::string &sha256, uint64_t size,
+                                     time_t mtime, mode_t mode)> &cb,
+            const std::function<void(const std::string &name, int64_t block,
+                                     bool is_tapir_index)> &on_header = {});
 
         // Like scan_archive, but auto-detects the data archive's physical block size
         // (reported via `detected_block_bytes`) by reading with an oversized buffer —
         // a single pass that both scans and discovers the block factor.
         bool scan_archive_detect(int tape_file, int &detected_block_bytes,
-                                 const std::function<void(const std::string &, const std::string &, uint64_t, time_t)> &cb,
-                                 const std::function<void(const std::string &)> &on_header = {});
+                                 const std::function<void(const std::string &, const std::string &,
+                                                          uint64_t, time_t, mode_t)> &cb,
+                                 const std::function<void(const std::string &, bool is_tapir_index)> &on_header = {});
 
         // Append a new data archive at EOD (written by `write_data`, or skipped if it
         // is empty/null), then write the manifest as the next tape file.

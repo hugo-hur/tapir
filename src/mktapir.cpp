@@ -116,22 +116,33 @@ static int do_import(const std::string &dev, const std::vector<int> &files, int 
             continue;
         }
         int detected = 0;
-        std::vector<std::tuple<std::string, std::string, uint64_t, time_t>> members;
+        bool saw_manifest = false;
+        std::vector<std::tuple<std::string, std::string, uint64_t, time_t, mode_t>> members;
         const bool ok = tape.scan_archive_detect(
             f, detected,
-            [&](const std::string &name, const std::string &sha, uint64_t size, time_t mtime)
+            [&](const std::string &name, const std::string &sha, uint64_t size, time_t mtime, mode_t mode)
             {
                 if (name == "manifest.json")
-                    return; // index file, not data
-                members.emplace_back(name, sha, size, mtime);
+                    return; // always skip from data indexing (tapir or not)
+                members.emplace_back(name, sha, size, mtime, mode);
                 if (verbose)
                     std::fprintf(stderr, "      %s  %llu\n", sha.c_str(), static_cast<unsigned long long>(size));
             },
-            [&](const std::string &name)
+            [&](const std::string &name, bool is_tapir_index)
             {
-                if (verbose && name != "manifest.json")
+                if (is_tapir_index)
+                    saw_manifest = true;
+                else if (verbose)
                     std::fprintf(stderr, "    %s\n", name.c_str());
             });
+        if (saw_manifest)
+        {
+            std::fprintf(stderr,
+                         "mktapir: tape file %d is a tapir index — refusing to import over an existing index.\n"
+                         "         Use -f <tape-files> to add specific new data tape files to the index,\n"
+                         "         or use tfsck for index recovery and rollback.\n", f);
+            return 1;
+        }
         if (!ok && members.empty())
         {
             // Nothing parsed: no valid tar header at the file's start — the tail of
@@ -155,7 +166,7 @@ static int do_import(const std::string &dev, const std::vector<int> &files, int 
             ++incomplete;
         }
         if (members.empty())
-            continue; // a manifest tape file (its sole member was skipped)
+            continue; // empty or unrecognised tape file — skip silently
 
         const int detected_bf = detected > 0 ? (detected + 511) / 512 : 0;
         const int bf = detected_bf > 0 ? detected_bf : bf_hint;
@@ -169,8 +180,8 @@ static int do_import(const std::string &dev, const std::vector<int> &files, int 
                                  "at tape file %d; using detected\n",
                          bf_hint, detected_bf, f);
 
-        for (const auto &[name, sha, size, mtime] : members)
-            idx.add_file(name, size, sha, f, bf, mtime);
+        for (const auto &[name, sha, size, mtime, mode] : members)
+            idx.add_file(name, size, sha, f, bf, mtime, mode);
         total += static_cast<int>(members.size());
         std::fprintf(stderr, "mktapir: tape file %d: %zu file(s), block size %d bytes (factor %d)\n",
                      f, members.size(), detected, bf);
@@ -290,16 +301,17 @@ static int do_append(const std::string &dev, const std::string &tarpath, int bf,
         return 1;
     }
 
-    std::vector<std::tuple<std::string, std::string, uint64_t, time_t>> collected;
+    std::vector<std::tuple<std::string, std::string, uint64_t, time_t, mode_t>> collected;
     int dtf = 0;
     const bool ok = tape.append(
         bf,
         [&](struct archive *out)
         {
             return tar_copy_members(in.get(), out,
-                                    [&](const std::string &name, const std::string &sha, uint64_t size, time_t mtime)
+                                    [&](const std::string &name, const std::string &sha,
+                                        uint64_t size, time_t mtime, mode_t mode)
                                     {
-                                        collected.emplace_back(name, sha, size, mtime);
+                                        collected.emplace_back(name, sha, size, mtime, mode);
                                         if (verbose)
                                             std::fprintf(stderr, "    %s  %llu  %s\n", name.c_str(),
                                                          static_cast<unsigned long long>(size), sha.c_str());
@@ -307,8 +319,8 @@ static int do_append(const std::string &dev, const std::string &tarpath, int bf,
         },
         [&](int data_tape_file)
         {
-            for (auto &[name, sha, size, mtime] : collected)
-                idx.add_file(name, size, sha, data_tape_file, bf, mtime);
+            for (auto &[name, sha, size, mtime, mode] : collected)
+                idx.add_file(name, size, sha, data_tape_file, bf, mtime, mode);
             return idx.serialize(-1, mbf);
         },
         dtf);

@@ -116,7 +116,8 @@ namespace
         else
         {
             st->st_mtime = n->mtime ? n->mtime : g->mtime;
-            st->st_mode = S_IFREG | (n->writing ? kNewFileMode : kFileMode);
+            const mode_t sealed = n->mode ? (n->mode & ~0222u) : kFileMode;
+            st->st_mode = S_IFREG | (n->writing ? kNewFileMode : sealed);
             st->st_nlink = 1;
             st->st_size = static_cast<off_t>(n->size);
             st->st_blocks = static_cast<blkcnt_t>((n->size + 511) / 512);
@@ -198,7 +199,7 @@ namespace
         return 0;
     }
 
-    int t_create(const char *path, mode_t, struct fuse_file_info *fi)
+    int t_create(const char *path, mode_t mode, struct fuse_file_info *fi)
     {
         std::lock_guard<std::mutex> lk(g->mtx);
         if (g->index.resolve(path))
@@ -207,6 +208,7 @@ namespace
         if (!n)
             return -ENOENT;
         n->mtime = std::time(nullptr);
+        n->mode = mode;
         auto h = std::make_unique<WriteHandle>();
         h->path = path;
         h->node = n;
@@ -364,6 +366,22 @@ namespace
         return g->index.remove_dir(path) ? 0 : -ENOTEMPTY;
     }
 
+    // chmod on staged/writing files updates the stored mode (carried into the tar header).
+    // Sealed on-tape files are immutable — reject with EPERM.
+    static int t_chmod(const char *path, mode_t mode, struct fuse_file_info *)
+    {
+        std::lock_guard<std::mutex> lk(g->mtx);
+        Node *n = g->index.resolve(path);
+        if (!n)
+            return -ENOENT;
+        if (n->is_dir)
+            return -EPERM;
+        if (!n->staged && !n->writing)
+            return -EPERM;
+        n->mode = mode;
+        return 0;
+    }
+
     // mv(1) and touch(1) call utimensat(). Staged/writing nodes apply the new
     // mtime to Node + Staged; sealed on-tape files are immutable.
     static int t_utimens(const char *path, const struct timespec tv[2],
@@ -399,6 +417,7 @@ namespace
         .mkdir    = t_mkdir,
         .unlink   = t_unlink,
         .rmdir    = t_rmdir,
+        .chmod    = t_chmod,
         .truncate = t_truncate,
         .open     = t_open,
         .read     = t_read,
@@ -463,7 +482,17 @@ int main(int argc, char **argv)
     std::fprintf(stderr, "tapir: searching for manifest at end of tape %s...\n", device.c_str());
     if (!st.tape->read_latest_manifest(manifest_json))
     {
-        std::fprintf(stderr, "tapir: could not read a manifest from %s\n", device.c_str());
+        // Probe with legacy (filename-only) reader to distinguish "no manifest at
+        // all" from "old-format manifest without PAX magic".
+        std::string probe;
+        if (st.tape->read_latest_manifest_legacy(probe))
+            std::fprintf(stderr,
+                         "tapir: ERROR: tape %s has an old-format manifest (manifest.json without\n"
+                         "       the tapir PAX magic header). Run 'tfsck --upgrade-manifest %s'\n"
+                         "       to rewrite it with the required magic, then retry.\n",
+                         device.c_str(), device.c_str());
+        else
+            std::fprintf(stderr, "tapir: could not read a manifest from %s\n", device.c_str());
         return 1;
     }
     try
@@ -479,10 +508,22 @@ int main(int argc, char **argv)
     g = &st; // must precede WriterThread construction (thread reads g on first wake)
     st.writer = std::make_unique<WriterThread>(*st.tape, bf, st.mtx, st.index);
 
+    const auto flat = st.index.flat();
+    int missing_blocks = 0;
+    for (const auto &f : flat)
+        if (f.block_number < 0)
+            ++missing_blocks;
+
     std::fprintf(stderr, "tapir: mounted %s -- volume %s, generation %llu, %zu file(s)\n",
                  device.c_str(),
                  st.index.volume_uuid().c_str(),
                  static_cast<unsigned long long>(st.index.latest_generation()),
-                 st.index.flat().size());
+                 flat.size());
+    if (missing_blocks > 0)
+        std::fprintf(stderr,
+                     "tapir: WARNING: %d file(s) have no block offset — per-member reads will\n"
+                     "       fall back to linear scan. Run tfsck %s\n"
+                     "       to fill in block offsets and enable fast seeking.\n",
+                     missing_blocks, device.c_str());
     return fuse_main(static_cast<int>(fargs.size()), fargs.data(), &tapir_ops, nullptr);
 }

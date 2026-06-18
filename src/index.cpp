@@ -114,16 +114,29 @@ namespace tapir
     }
 
     void Index::add_file(const std::string &path, uint64_t size, const std::string &sha256,
-                         int dtf, int bf, time_t mtime)
+                         int dtf, int bf, time_t mtime, mode_t mode)
     {
-        Node *n = ensure_path(path, false);
-        if (!n)
-            return; // already indexed — keep the existing entry
+        // Resolve existing node first so the last occurrence on tape wins,
+        // matching normal tar extract/append semantics.
+        Node *n = resolve(path);
+        if (n)
+        {
+            if (n->is_dir || n->staged)
+                return; // directory or active FUSE write — leave untouched
+        }
+        else
+        {
+            n = ensure_path(path, false);
+            if (!n)
+                return; // parent path missing or structural conflict
+        }
         n->size = size;
         n->sha256 = sha256;
         n->mtime = mtime;
         n->data_tape_file = dtf;
         n->block_factor = bf;
+        n->block_number = -1; // tape location changed; filled in by tfsck verify if needed
+        n->mode = mode;
         if (meta_.find(dtf) == meta_.end())
         { // register this archive's header metadata
             Meta m;
@@ -212,6 +225,7 @@ namespace tapir
                 n->data_tape_file = dtf;
                 n->block_factor = bf;
                 n->block_number = f.value("tape_block", -1LL);
+                n->mode = static_cast<mode_t>(f.value("perm", 0));
                 if (auto it = f.find("hashes"); it != f.end() && it->is_object())
                     if (auto hit = it->find("sha256sum"); hit != it->end())
                         n->sha256 = hit->get<std::string>();
@@ -241,7 +255,7 @@ namespace tapir
         std::vector<FileRec> out;
         out.reserve(files.size());
         for (const auto &[path, n] : files)
-            out.push_back({path, n->size, n->sha256, n->data_tape_file, n->block_factor});
+            out.push_back({path, n->size, n->sha256, n->data_tape_file, n->block_factor, n->block_number});
         return out;
     }
 
@@ -312,6 +326,8 @@ namespace tapir
                                   : json::object({{"sha256sum", node->sha256}});
                 if (node->block_number >= 0)
                     f["tape_block"] = node->block_number;
+                if (node->mode != 0)
+                    f["perm"] = node->mode;
                 f["verified_with"] = nullptr;
                 arc.push_back(std::move(f));
             }

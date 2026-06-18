@@ -102,7 +102,7 @@ void WriterThread::enqueue_file(Node *node, std::shared_ptr<Staged> data,
         const int64_t bsize = static_cast<int64_t>(block_factor_) * 512;
         const int64_t this_block = open_write_->next_member_block;
 
-        OutFile of{path, data->fd.get(), data->size, mtime};
+        OutFile of{path, data->fd.get(), data->size, mtime, node->mode};
         const bool ok = tar_write_files(open_write_->ar.get(), {of});
 
         if (ok) {

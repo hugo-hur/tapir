@@ -8,6 +8,7 @@
 #include <archive_entry.h>
 
 #include <cstdlib>
+#include <cstring>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -91,7 +92,7 @@ namespace tapir
             archive_entry_set_pathname_utf8(e.get(), f.name.c_str());
             archive_entry_set_size(e.get(), static_cast<la_int64_t>(f.size));
             archive_entry_set_filetype(e.get(), AE_IFREG);
-            archive_entry_set_perm(e.get(), kFileMode);
+            archive_entry_set_perm(e.get(), f.mode ? f.mode : kFileMode);
             archive_entry_set_mtime(e.get(), f.mtime ? f.mtime : std::time(nullptr), 0);
             if (archive_write_header(a, e.get()) != ARCHIVE_OK)
                 return false;
@@ -119,11 +120,30 @@ namespace tapir
         archive_entry_set_size(e.get(), static_cast<la_int64_t>(data.size()));
         archive_entry_set_filetype(e.get(), AE_IFREG);
         archive_entry_set_perm(e.get(), kFileMode);
+        archive_entry_xattr_add_entry(e.get(), kTapirMagicXattrName,
+                                      kTapirMagicXattrValue,
+                                      std::strlen(kTapirMagicXattrValue));
         if (archive_write_header(a, e.get()) != ARCHIVE_OK)
             return false;
         if (!data.empty() && archive_write_data(a, data.data(), data.size()) < 0)
             return false;
         return true;
+    }
+
+    bool tar_entry_has_tapir_magic(struct archive_entry *e)
+    {
+        archive_entry_xattr_reset(e);
+        const char *xname;
+        const void *xval;
+        size_t xsz;
+        while (archive_entry_xattr_next(e, &xname, &xval, &xsz) == ARCHIVE_OK)
+        {
+            if (std::strcmp(xname, kTapirMagicXattrName) == 0 &&
+                xsz == std::strlen(kTapirMagicXattrValue) &&
+                std::memcmp(xval, kTapirMagicXattrValue, xsz) == 0)
+                return true;
+        }
+        return false;
     }
 
     static std::string normalize(const char *p)
@@ -138,7 +158,7 @@ namespace tapir
 
     bool tar_copy_members(
         struct archive *in, struct archive *out,
-        const std::function<void(const std::string &, const std::string &, uint64_t, time_t)> &cb)
+        const std::function<void(const std::string &, const std::string &, uint64_t, time_t, mode_t)> &cb)
     {
         struct archive_entry *e;
         int r;
@@ -146,6 +166,7 @@ namespace tapir
         {
             const std::string name = normalize(epath(e));
             const time_t entry_mtime = archive_entry_mtime(e);
+            const mode_t entry_mode = archive_entry_perm(e);
             archive_entry_set_pathname_utf8(e, name.c_str()); // normalise on-tape name too
             if (archive_write_header(out, e) != ARCHIVE_OK)
                 return false;
@@ -169,15 +190,15 @@ namespace tapir
             if (rr != ARCHIVE_EOF)
                 return false;
             if (is_file)
-                cb(name, sha.hex(), total, entry_mtime);
+                cb(name, sha.hex(), total, entry_mtime, entry_mode);
         }
         return r == ARCHIVE_EOF;
     }
 
     bool tar_for_each_member(
         struct archive *a,
-        const std::function<void(const std::string &, const std::string &, uint64_t, time_t)> &cb,
-        const std::function<void(const std::string &)> &on_header)
+        const std::function<void(const std::string &, const std::string &, uint64_t, time_t, mode_t)> &cb,
+        const std::function<void(const std::string &, bool)> &on_header)
     {
         struct archive_entry *e;
         int r;
@@ -190,8 +211,10 @@ namespace tapir
             }
             const std::string name = normalize(epath(e));
             const time_t entry_mtime = archive_entry_mtime(e);
+            const mode_t entry_mode = archive_entry_perm(e);
+            const bool is_tapir_index = (name == "manifest.json") && tar_entry_has_tapir_magic(e);
             if (on_header)
-                on_header(name);
+                on_header(name, is_tapir_index);
             security::Sha256 sha;
             const void *b;
             size_t n;
@@ -205,7 +228,56 @@ namespace tapir
             }
             if (rr != ARCHIVE_EOF)
                 return false;
-            cb(name, sha.hex(), total, entry_mtime);
+            cb(name, sha.hex(), total, entry_mtime, entry_mode);
+        }
+        return r == ARCHIVE_EOF;
+    }
+
+    bool tar_for_each_member_with_blocks(
+        struct archive *a, int64_t bsize,
+        const std::function<void(const std::string &, int64_t, const std::string &,
+                                 uint64_t, time_t, mode_t)> &cb,
+        const std::function<void(const std::string &, int64_t, bool)> &on_header)
+    {
+        struct archive_entry *e;
+        int r;
+        while ((r = archive_read_next_header(a, &e)) == ARCHIVE_OK)
+        {
+            if (archive_entry_filetype(e) != AE_IFREG)
+            {
+                archive_read_data_skip(a);
+                continue;
+            }
+            // Capture physical-block offset immediately after the header is read.
+            // archive_filter_bytes is always a multiple of bsize (libarchive reads
+            // one bsize-byte block per syscall). The header is in the most recently
+            // read block, which is the one just before the current read position:
+            //   block = (filter_bytes - 1) / bsize   (integer division)
+            // This is the same value the writer stores via archive_filter_bytes/bsize
+            // captured before writing each member.
+            const la_int64_t raw = archive_filter_bytes(a, -1);
+            const int64_t block = (bsize > 0 && raw > 0) ? (raw - 1) / bsize : 0;
+
+            const std::string name = normalize(epath(e));
+            const time_t entry_mtime = archive_entry_mtime(e);
+            const mode_t entry_mode = archive_entry_perm(e);
+            const bool is_tapir_index = (name == "manifest.json") && tar_entry_has_tapir_magic(e);
+            if (on_header)
+                on_header(name, block, is_tapir_index);
+            security::Sha256 sha;
+            const void *b;
+            size_t n;
+            la_int64_t off;
+            int rr;
+            uint64_t total = 0;
+            while ((rr = archive_read_data_block(a, &b, &n, &off)) == ARCHIVE_OK)
+            {
+                sha.update(b, n);
+                total += n;
+            }
+            if (rr != ARCHIVE_EOF)
+                return false;
+            cb(name, block, sha.hex(), total, entry_mtime, entry_mode);
         }
         return r == ARCHIVE_EOF;
     }

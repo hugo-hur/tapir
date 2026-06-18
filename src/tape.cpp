@@ -207,10 +207,11 @@ namespace tapir
         return a;
     }
 
-    // Read manifest.json from the tape's current position. Checks that the first
-    // (and only) member is manifest.json; rejects data tape files without
-    // scanning them.
-    static bool read_manifest_body(const std::string &dev, int mbf, std::string &out)
+    // Read manifest.json from the tape's current position. When require_magic is true
+    // (normal operation) the entry must also carry the tapir PAX magic xattr; when
+    // false (legacy/upgrade path) filename match alone is sufficient.
+    static bool read_manifest_body(const std::string &dev, int mbf, std::string &out,
+                                   bool require_magic)
     {
         Fd fd;
         ArchiveReadPtr a = open_read(dev, mbf * 512, fd);
@@ -223,6 +224,8 @@ namespace tapir
         if (!p)
             p = archive_entry_pathname(e);
         if (!p || std::string(p) != "manifest.json")
+            return false;
+        if (require_magic && !tar_entry_has_tapir_magic(e))
             return false;
         out.clear();
         const void *b;
@@ -238,10 +241,19 @@ namespace tapir
     {
         if (!position_latest_manifest())
             return false;
-        const bool ok = read_manifest_body(dev_, mbf_, out);
+        const bool ok = read_manifest_body(dev_, mbf_, out, true);
         // Query actual post-read position from the driver. The st driver crosses the
         // filemark on fd close, so we land at the start of the next tape file; that
         // value lets position_data stream forward without rewinding.
+        file_number();
+        return ok;
+    }
+
+    bool Tape::read_latest_manifest_legacy(std::string &out)
+    {
+        if (!position_latest_manifest())
+            return false;
+        const bool ok = read_manifest_body(dev_, mbf_, out, false);
         file_number();
         return ok;
     }
@@ -250,7 +262,7 @@ namespace tapir
     {
         if (!position_data(tape_file))
             return false;
-        const bool ok = read_manifest_body(dev_, mbf_, out);
+        const bool ok = read_manifest_body(dev_, mbf_, out, false); // no magic req — admin op
         file_number(); // capture post-read position (see read_latest_manifest)
         return ok;
     }
@@ -272,8 +284,9 @@ namespace tapir
     }
 
     bool Tape::scan_archive(int tape_file, int block_factor, int64_t block_num,
-                            const std::function<void(const std::string &, const std::string &, uint64_t, time_t)> &cb,
-                            const std::function<void(const std::string &)> &on_header)
+                            const std::function<void(const std::string &, const std::string &,
+                                                     uint64_t, time_t, mode_t)> &cb,
+                            const std::function<void(const std::string &, bool)> &on_header)
     {
         if (!seek_to(tape_file, block_num))
             return false;
@@ -286,9 +299,28 @@ namespace tapir
         return ok;
     }
 
+    bool Tape::scan_archive_with_blocks(int tape_file, int block_factor,
+                                        const std::function<void(const std::string &, int64_t,
+                                                                 const std::string &, uint64_t,
+                                                                 time_t, mode_t)> &cb,
+                                        const std::function<void(const std::string &, int64_t, bool)> &on_header)
+    {
+        if (!position_data(tape_file))
+            return false;
+        Fd fd;
+        ArchiveReadPtr a = open_read(dev_, block_factor * 512, fd);
+        if (!a)
+            return false;
+        const bool ok = tar_for_each_member_with_blocks(
+            a.get(), static_cast<int64_t>(block_factor) * 512, cb, on_header);
+        file_number(); // capture post-read position (see read_latest_manifest)
+        return ok;
+    }
+
     bool Tape::scan_archive_detect(int tape_file, int &detected,
-                                   const std::function<void(const std::string &, const std::string &, uint64_t, time_t)> &cb,
-                                   const std::function<void(const std::string &)> &on_header)
+                                   const std::function<void(const std::string &, const std::string &,
+                                                            uint64_t, time_t, mode_t)> &cb,
+                                   const std::function<void(const std::string &, bool)> &on_header)
     {
         detected = 0;
 
