@@ -26,8 +26,10 @@ fusermount3 -u <mountpoint>
 ```
 
 - Reads the latest manifest from EOT, serves the file tree via FUSE3.
-- **Append**: copy files in; they are staged in a temp file and written as a new
-  tar at EOD on unmount or `sync`. A fresh cumulative index is written after.
+- **Append**: copy files in; they are staged in a temp file and written to tape
+  asynchronously. All files written between two syncs are batched into a single
+  multi-member tar at EOD. `sync` (or unmount) closes that tar and writes a fresh
+  cumulative index as the next tape file.
 - **Delete**: index-only — the data remains on tape (WORM-safe).
 - **mtime**: preserved through the tar header; `touch`/`mv -p` work correctly.
 - **fsync**: `sync <mountpoint>` or application `fsync` flushes staged files and
@@ -114,17 +116,28 @@ tape files remain untouched. Refuses if the tape is full.
 ## Tape layout and index format
 
 ```
-tape file 0  — data tar          (first write session)
+tape file 0  — data tar (N members — all files written before first sync)
 tape file 1  — manifest tar      (cumulative index)
-tape file 2  — data tar          (second write session)
+tape file 2  — data tar (M members — all files written before second sync)
 tape file 3  — manifest tar      (cumulative — covers all sessions)
 ...
 ```
 
+**Write batching:** everything written between two `sync` calls (or between mount
+and the first sync) is accumulated into a single multi-member PAX tar. `sync`
+closes the tar (writing end-of-archive blocks + the filemark) and immediately
+appends the manifest as the next tape file. This keeps the filemark count low and
+lets `tfsck` stream the tape without rewinding between files.
+
+**Per-member seeking:** the manifest records each file's tape file number and its
+physical-block offset within that tape file (`tape_block`). On read, `tapir` uses
+FSF to reach the tape file and MTFSR to skip directly to the member's tar header
+block — no need to read past preceding members in the same tar.
+
 Each manifest is cumulative and supersedes the previous one. On WORM tapes all
-prior manifests are preserved and recoverable. See
+prior manifests are preserved and recoverable via `tfsck --rollback-to`. See
 [docs/index-format.md](docs/index-format.md) for the full JSON schema.
-Manifest tar is always the last file on tape, so mounting is fast (eod -> back 1 file -> read).
+Manifest tar is always the last file on tape, so mounting is fast (eod → back 1 file → read).
 
 ---
 
