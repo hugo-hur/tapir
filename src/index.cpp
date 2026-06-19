@@ -261,6 +261,21 @@ namespace tapir
         return out;
     }
 
+    static void release_flushed_walk(Node *n)
+    {
+        for (auto &[name, child] : n->children)
+        {
+            if (child->is_dir)
+                release_flushed_walk(child.get());
+            else if (child->staged && child->staged_flushed)
+            {
+                child->staged.reset(); // member is now on a closed tape file; free the temp
+                child->staged_flushed = false;
+            }
+        }
+    }
+    void Index::release_flushed_staged() { release_flushed_walk(root_.get()); }
+
     uint64_t Index::latest_generation() const
     {
         uint64_t g = 0;

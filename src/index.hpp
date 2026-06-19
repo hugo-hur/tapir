@@ -47,6 +47,7 @@ namespace tapir
         int64_t block_offset = -1;      // header's byte offset within that block; -1 = unknown (slow read)
         mode_t mode = 0;                // permission bits from tar header; 0 = not recorded (use kFileMode default)
         std::shared_ptr<Staged> staged; // non-null while data lives only in a temp file
+        bool staged_flushed = false;    // staged data is on the (still-open) tape file; release at sync
         WriteHandle *writing = nullptr; // non-owning observer while open for writing
         std::map<std::string, std::unique_ptr<Node>> children;
     };
@@ -87,6 +88,11 @@ namespace tapir
         bool dirty() const { return dirty_; }
         void mark_dirty() { dirty_ = true; }
         void mark_clean() { dirty_ = false; }
+
+        // Drop the staged temp copy of every file whose data is already on a now-closed
+        // tape file (staged_flushed). Called by the writer at sync, once the tape file
+        // is closed and the members are re-readable from tape.
+        void release_flushed_staged();
 
         const Node *root() const { return root_.get(); }
         Node *root() { return root_.get(); }

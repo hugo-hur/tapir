@@ -116,12 +116,16 @@ void WriterThread::enqueue_file(Node *node, std::shared_ptr<Staged> data,
             node->data_tape_file = open_write_->tape_file;
             node->block_factor   = block_factor_;
             node->block_number   = this_block;
+            // Keep node->staged alive — it serves read-after-write until sync() closes
+            // this tape file, the point at which the member becomes re-readable from
+            // tape. Mark it flushed so sync() knows it is safe to release.
+            node->staged_flushed = true;
             std::fprintf(stderr, "tapir: writer: wrote '%s' -> tape file %d block %" PRId64 "\n",
                          path.c_str(), open_write_->tape_file, this_block);
         } else {
             std::fprintf(stderr, "tapir: writer: FAILED to write '%s'\n", path.c_str());
+            node->staged.reset(); // write failed: data is not on tape, drop the staged copy
         }
-        node->staged.reset();
     });
 }
 
@@ -152,6 +156,12 @@ void WriterThread::sync(std::unique_lock<std::mutex> &lk)
         std::string manifest;
         {
             std::lock_guard<std::mutex> gl(state_mtx_);
+            // The tape file is now closed and re-readable, so drop the staged temp
+            // copies of the files it holds. This also lets serialize() group them
+            // under their real data_tape_file instead of treating them as new staged
+            // files. Files released *during* this sync are not yet flushed and keep
+            // their staged copy for the next sync.
+            index_.release_flushed_staged();
             manifest = index_.serialize(0, block_factor_);
         }
 
