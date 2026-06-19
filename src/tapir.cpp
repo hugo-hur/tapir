@@ -125,10 +125,12 @@ namespace
     }
 
     // Flush the index to tape. Temporarily releases `lk` while the writer thread
-    // works; reacquires before return. No-op if the index is not dirty.
+    // works; reacquires before return. No-op if the index is not dirty or writer
+    // not yet initialised.
     static void sync_locked(std::unique_lock<std::mutex> &lk)
     {
-        g->writer->sync(lk);
+        if (g->writer)
+            g->writer->sync(lk);
     }
 
     // ── FUSE ops ──────────────────────────────────────────────────────────────────
@@ -139,6 +141,11 @@ namespace
         cfg->entry_timeout = 1;
         cfg->attr_timeout = 1;
         cfg->negative_timeout = 0;
+        // WriterThread must be created here, after fuse_main() has daemonised
+        // (fork + setsid). fork() only preserves the calling thread in the child;
+        // a jthread started before the fork has no live OS counterpart in the
+        // daemon and its task queue is never drained — any sync blocks forever.
+        g->writer = std::make_unique<WriterThread>(*g->tape, g->block_factor, g->mtx, g->index);
         return nullptr;
     }
 
@@ -331,7 +338,8 @@ namespace
 
             const time_t snap_mtime = h->node->mtime; // snapshot before any utimens race
             const std::string member{member_name(h->path.c_str())};
-            g->writer->enqueue_file(h->node, std::move(st), member, snap_mtime);
+            if (g->writer)
+                g->writer->enqueue_file(h->node, std::move(st), member, snap_mtime);
             g->index.mark_dirty();
         }
         g->writers.erase(it);
@@ -505,8 +513,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    g = &st; // must precede WriterThread construction (thread reads g on first wake)
-    st.writer = std::make_unique<WriterThread>(*st.tape, bf, st.mtx, st.index);
+    g = &st; // WriterThread is created in t_init after fuse_main() daemonises
 
     const auto flat = st.index.flat();
     int slow_reads = 0; // files lacking a full (block + within-block offset) location
