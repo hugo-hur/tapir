@@ -286,10 +286,24 @@ closes the tar (writing end-of-archive blocks + the filemark) and immediately
 appends the manifest as the next tape file. This keeps the filemark count low and
 lets `tfsck` stream the tape without rewinding between files.
 
-**Per-member seeking:** the manifest records each file's tape file number and its
-physical-block offset within that tape file (`tape_block`). On read, `tapir` uses
-FSF to reach the tape file and MTFSR to skip directly to the member's tar header
-block — no need to read past preceding members in the same tar.
+**Per-member seeking:** the manifest records each file's tape file number plus the
+header's location within that tape file — a physical block (`tape_block`) and the
+header's byte offset inside that block (`tape_block_offset`). On read, `tapir` FSFs
+to the tape file, MTFSRs to the block, reads that whole block, and hands libarchive
+the bytes from the header offset onward — so it lands on any member, not just the
+first in a multi-member tar. If the offset is unrecorded it falls back to a correct
+(slower) full-file scan.
+
+> **TODO — writer-side offset:** the background writer currently records `tape_block`
+> but leaves `tape_block_offset` unset, so freshly written files read via the slow
+> full-file fallback until a `tfsck <device> -m <bf>` pass fills the exact offsets.
+> Planned: have the writer record the offset too, **conservatively — only when the
+> member is provably ustar-representable** (short path, size <8 GiB, in-range
+> mtime/uid — i.e. no PAX extended header), leaving it `-1` otherwise. That keeps the
+> manifest honest (no guessed values); the rare non-representable member stays
+> slow-but-correct and `tfsck` fills it exactly later. (libarchive's write-side byte
+> counters can't give the header position, so this uses a running size-sum of
+> `512 + roundup(size, 512)` per member.)
 
 Each manifest is cumulative and supersedes the previous one. On WORM tapes all
 prior manifests are preserved and recoverable via `tfsck --rollback` /
