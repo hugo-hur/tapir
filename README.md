@@ -220,6 +220,24 @@ make check        # run unit tests
 PKG_CONFIG_PATH=/opt/lib/pkgconfig ./configure
 ```
 
+A custom/forked libarchive can already be used by overriding the precious
+variables (this skips the `pkg-config` lookup), e.g. for a statically-linked
+build against a local tree:
+
+```sh
+./configure \
+  LIBARCHIVE_CFLAGS="-I/path/to/libarchive/libarchive" \
+  LIBARCHIVE_LIBS="/path/to/libarchive/libarchive.a -lz -llzma -lzstd -lbz2 -lcrypto"
+```
+
+> **TODO — first-class custom-libarchive option:** add a `--with-libarchive=PATH`
+> (and/or `--with-bundled-libarchive` for a `third_party/libarchive` git submodule)
+> configure switch so the path doesn't have to be passed as raw `LIBARCHIVE_CFLAGS`/
+> `LIBARCHIVE_LIBS`. Motivation: a libarchive fork that exposes the output header
+> position would let the writer record exact `tape_block_offset` values (see the
+> per-member seeking TODO above). Gate the new-API call behind a configure link-test
+> (`#ifdef`) so tapir still builds against stock libarchive.
+
 ---
 
 ## In-depth information
