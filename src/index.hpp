@@ -43,7 +43,8 @@ namespace tapir
         time_t mtime = 0; // per-file mtime; 0 means use the filesystem mount time
         int data_tape_file = 0;         // tape file holding this member's data
         int block_factor = 0;           // blocking factor of that tape file
-        int64_t block_number = -1;      // absolute tape block address; -1 = unknown (fall back to file-based seek)
+        int64_t block_number = -1;      // header's physical block within its tape file; -1 = unknown
+        int64_t block_offset = -1;      // header's byte offset within that block; -1 = unknown (slow read)
         mode_t mode = 0;                // permission bits from tar header; 0 = not recorded (use kFileMode default)
         std::shared_ptr<Staged> staged; // non-null while data lives only in a temp file
         WriteHandle *writing = nullptr; // non-owning observer while open for writing
@@ -59,6 +60,7 @@ namespace tapir
         int data_tape_file = 0;
         int block_factor = 0;
         int64_t block_number = -1; // -1 = not recorded (old manifest without tape_block)
+        int64_t block_offset = -1; // -1 = not recorded (header's byte offset within its block)
     };
 
     class Index

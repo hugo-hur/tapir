@@ -81,10 +81,12 @@ namespace tapir
         // and rollback). Returns false if the tape file is not a tapir manifest.
         bool read_manifest_at(int tape_file, std::string &out);
 
-        // Extract one member from the data archive at `tape_file`.
-        // `block_num` >= 0 uses a fast MTSEEK to the absolute block address;
-        // pass -1 to fall back to rewind + forward-space (older manifests, tfsck).
-        bool read_member(int tape_file, int block_factor, int64_t block_num,
+        // Extract one member from the data archive at `tape_file`. When both
+        // `block_num` and `block_offset` are >= 0, seeks straight to the member's
+        // block and skips the within-block header offset (fast path); otherwise, or
+        // if that fast read fails, falls back to scanning the tape file from its
+        // start. `block_offset` is the header's byte offset within `block_num`.
+        bool read_member(int tape_file, int block_factor, int64_t block_num, int64_t block_offset,
                          const std::string &member, Fd &out_fd, uint64_t &out_size);
 
         // Stream every member of the data archive at `tape_file`, calling cb per file.
@@ -95,12 +97,13 @@ namespace tapir
                                                    uint64_t, time_t, mode_t)> &cb,
                           const std::function<void(const std::string &, bool is_tapir_index)> &on_header = {});
 
-        // Like scan_archive but also reports the physical-block offset of each member's
-        // tar header within the tape file. Used by tfsck to fill tape_block entries for
-        // archives written before per-member block tracking was added.
+        // Like scan_archive but also reports each member's header position as a
+        // (block, offset) pair within the tape file (see tar_for_each_member_with_blocks).
+        // Used by tfsck to fill tape_block / tape_block_offset for archives indexed
+        // without them (imports, or pre-offset manifests).
         bool scan_archive_with_blocks(
             int tape_file, int block_factor,
-            const std::function<void(const std::string &name, int64_t block,
+            const std::function<void(const std::string &name, int64_t block, int64_t offset,
                                      const std::string &sha256, uint64_t size,
                                      time_t mtime, mode_t mode)> &cb,
             const std::function<void(const std::string &name, int64_t block,

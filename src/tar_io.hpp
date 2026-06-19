@@ -75,14 +75,14 @@ namespace tapir
                                  uint64_t size, time_t mtime, mode_t mode)> &cb,
         const std::function<void(const std::string &name, bool is_tapir_index)> &on_header = {});
 
-    // Like tar_for_each_member but also reports the physical-block offset of each
-    // member's tar header within the archive. `block` is computed as
-    // (archive_filter_bytes(a,-1) - 1) / bsize captured right after
-    // archive_read_next_header — this gives the 0-based index of the physical block
-    // that contains the member's header, matching what the writer stores as tape_block.
+    // Like tar_for_each_member but also reports where each member's tar header sits:
+    // `block` is the 0-based physical block (header byte position / bsize) and
+    // `offset` is the header's byte offset within that block (position % bsize),
+    // both taken from archive_read_header_position(). The (block, offset) pair is
+    // what tar_open_at_block_offset needs to seek straight to a member.
     bool tar_for_each_member_with_blocks(
         struct archive *a, int64_t bsize,
-        const std::function<void(const std::string &name, int64_t block,
+        const std::function<void(const std::string &name, int64_t block, int64_t offset,
                                  const std::string &sha256, uint64_t size,
                                  time_t mtime, mode_t mode)> &cb,
         const std::function<void(const std::string &name, int64_t block,

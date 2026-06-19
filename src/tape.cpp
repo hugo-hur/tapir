@@ -267,9 +267,10 @@ namespace tapir
         return ok;
     }
 
-    bool Tape::read_member(int tape_file, int block_factor, int64_t block_num,
+    bool Tape::read_member(int tape_file, int block_factor, int64_t block_num, int64_t block_offset,
                            const std::string &member, Fd &out_fd, uint64_t &out_size)
     {
+        (void)block_offset; // recorded in the index; not yet used for seeking
         if (!seek_to(tape_file, block_num))
             return false;
         Fd fd;
@@ -300,7 +301,7 @@ namespace tapir
     }
 
     bool Tape::scan_archive_with_blocks(int tape_file, int block_factor,
-                                        const std::function<void(const std::string &, int64_t,
+                                        const std::function<void(const std::string &, int64_t, int64_t,
                                                                  const std::string &, uint64_t,
                                                                  time_t, mode_t)> &cb,
                                         const std::function<void(const std::string &, int64_t, bool)> &on_header)

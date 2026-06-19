@@ -136,6 +136,7 @@ namespace tapir
         n->data_tape_file = dtf;
         n->block_factor = bf;
         n->block_number = -1; // tape location changed; filled in by tfsck verify if needed
+        n->block_offset = -1;
         n->mode = mode;
         if (meta_.find(dtf) == meta_.end())
         { // register this archive's header metadata
@@ -225,6 +226,7 @@ namespace tapir
                 n->data_tape_file = dtf;
                 n->block_factor = bf;
                 n->block_number = f.value("tape_block", -1LL);
+                n->block_offset = f.value("tape_block_offset", -1LL);
                 n->mode = static_cast<mode_t>(f.value("perm", 0));
                 if (auto it = f.find("hashes"); it != f.end() && it->is_object())
                     if (auto hit = it->find("sha256sum"); hit != it->end())
@@ -255,7 +257,7 @@ namespace tapir
         std::vector<FileRec> out;
         out.reserve(files.size());
         for (const auto &[path, n] : files)
-            out.push_back({path, n->size, n->sha256, n->data_tape_file, n->block_factor, n->block_number});
+            out.push_back({path, n->size, n->sha256, n->data_tape_file, n->block_factor, n->block_number, n->block_offset});
         return out;
     }
 
@@ -326,6 +328,8 @@ namespace tapir
                                   : json::object({{"sha256sum", node->sha256}});
                 if (node->block_number >= 0)
                     f["tape_block"] = node->block_number;
+                if (node->block_offset >= 0)
+                    f["tape_block_offset"] = node->block_offset;
                 if (node->mode != 0)
                     f["perm"] = node->mode;
                 f["verified_with"] = nullptr;

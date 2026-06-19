@@ -304,7 +304,7 @@ namespace tapir
 
     bool tar_for_each_member_with_blocks(
         struct archive *a, int64_t bsize,
-        const std::function<void(const std::string &, int64_t, const std::string &,
+        const std::function<void(const std::string &, int64_t, int64_t, const std::string &,
                                  uint64_t, time_t, mode_t)> &cb,
         const std::function<void(const std::string &, int64_t, bool)> &on_header)
     {
@@ -317,15 +317,11 @@ namespace tapir
                 archive_read_data_skip(a);
                 continue;
             }
-            // Capture physical-block offset immediately after the header is read.
-            // archive_filter_bytes is always a multiple of bsize (libarchive reads
-            // one bsize-byte block per syscall). The header is in the most recently
-            // read block, which is the one just before the current read position:
-            //   block = (filter_bytes - 1) / bsize   (integer division)
-            // This is the same value the writer stores via archive_filter_bytes/bsize
-            // captured before writing each member.
-            const la_int64_t raw = archive_filter_bytes(a, -1);
-            const int64_t block = (bsize > 0 && raw > 0) ? (raw - 1) / bsize : 0;
+            // Byte offset of this member's header within the tape file, split into
+            // the physical block it lands in and the offset inside that block.
+            const la_int64_t pos = archive_read_header_position(a);
+            const int64_t block  = (bsize > 0 && pos >= 0) ? pos / bsize : 0;
+            const int64_t offset = (bsize > 0 && pos >= 0) ? pos % bsize : 0;
 
             const std::string name = normalize(epath(e));
             const time_t entry_mtime = archive_entry_mtime(e);
@@ -346,7 +342,7 @@ namespace tapir
             }
             if (rr != ARCHIVE_EOF)
                 return false;
-            cb(name, block, sha.hex(), total, entry_mtime, entry_mode);
+            cb(name, block, offset, sha.hex(), total, entry_mtime, entry_mode);
         }
         return r == ARCHIVE_EOF;
     }

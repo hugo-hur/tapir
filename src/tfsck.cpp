@@ -71,7 +71,7 @@ static int do_verify(const std::string &device, int bf, int mbf, bool verbose)
     {
         expected[f.data_tape_file][f.path] = f.sha256;
         bf_of[f.data_tape_file] = f.block_factor ? f.block_factor : bf;
-        if (f.block_number < 0)
+        if (f.block_number < 0 || f.block_offset < 0)
             ++missing_block_offsets;
     }
 
@@ -93,7 +93,7 @@ static int do_verify(const std::string &device, int bf, int mbf, bool verbose)
                     dtf, bf_of[dtf], want.size());
         const bool ok = tape.scan_archive_with_blocks(
             dtf, bf_of[dtf],
-            [&](const std::string &name, int64_t block, const std::string &sha, uint64_t, time_t, mode_t)
+            [&](const std::string &name, int64_t block, int64_t offset, const std::string &sha, uint64_t, time_t, mode_t)
             {
                 seen.insert(name);
                 auto it = want.find(name);
@@ -104,10 +104,13 @@ static int do_verify(const std::string &device, int bf, int mbf, bool verbose)
                         std::printf("      %s  ORPHAN\n", sha.c_str());
                     return;
                 }
-                // Fill in missing block offset while we have it from the scan.
-                if (Node *n = index.resolve(name); n && n->data_tape_file == dtf && n->block_number < 0)
+                // Fill in the member's block + within-block offset from the scan so
+                // later reads can seek straight to it.
+                if (Node *n = index.resolve(name);
+                    n && n->data_tape_file == dtf && (n->block_number < 0 || n->block_offset < 0))
                 {
                     n->block_number = block;
+                    n->block_offset = offset;
                     ++reindexed;
                 }
                 if (it->second.empty() || it->second == sha)
