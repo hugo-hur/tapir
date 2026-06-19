@@ -231,9 +231,8 @@ static int do_init(const std::string &dev, int mbf, bool force)
     {
         std::fprintf(stderr,
                      "mktapir: tape already has %d file(s) — refusing to write a blank index.\n"
-                     "         Use --force to write a new empty index at end of tape anyway\n"
-                     "         (existing data stays on tape and is recoverable via tfsck or\n"
-                     "         'mktapir import -f'), or use 'mktapir import' to index it.\n",
+                     "         Use --force to write a new empty index at start of tape anyway.\n"
+                     "         In this case existing data on tape will be lost.\n",
                      count);
         return 1;
     }
