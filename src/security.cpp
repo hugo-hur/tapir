@@ -141,17 +141,17 @@ namespace tapir::security
                                                                       const std::uint64_t &write_generation)
     {
         auto input = ByteConcat(volume_uuid, Uint64ToBigEndianBytes(write_generation));
-        std::array<std::byte, 32> out; //[EVP_MAX_MD_SIZE];
+        std::array<std::byte, 32> out;
         size_t out_len = 0;
 
         if (!EVP_Q_mac(
-                nullptr,    // default libctx
-                "HMAC",     // MAC algorithm
-                nullptr,    // properties
-                "SHA256",   // digest
-                nullptr, 0, // params
-                reinterpret_cast<unsigned char *>(master_key.data()), master_key.size(),
-                reinterpret_cast<unsigned char *>(input.data()), input.size(),
+                nullptr,  // default libctx
+                "HMAC",   // MAC algorithm
+                nullptr,  // properties
+                "SHA256", // digest
+                nullptr,  // params
+                master_key.data(), master_key.size(),                                // key, keylen
+                reinterpret_cast<const unsigned char *>(input.data()), input.size(), // data, datalen
                 reinterpret_cast<unsigned char *>(out.data()), out.size(), &out_len))
         {
             throw std::runtime_error("EVP_Q_mac failed");
