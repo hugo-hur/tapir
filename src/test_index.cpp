@@ -7,6 +7,7 @@
 #include "index.hpp"
 
 #include <cstdio>
+#include <memory>
 #include <string>
 
 using namespace tapir;
@@ -129,6 +130,22 @@ static void test_block_number_reset_on_overwrite()
     CHECK(n2->block_number == -1);  // reset so tfsck can fill in the correct value
 }
 
+static void test_release_flushed_staged()
+{
+    std::puts("-- release_flushed_staged: drops flushed, keeps in-flight, no-op on plain");
+    Index idx = make_index();
+    Node *a = idx.create_file("a"); a->staged = std::make_shared<Staged>(); a->staged_flushed = true;  // on closed tape file
+    Node *b = idx.create_file("b"); b->staged = std::make_shared<Staged>(); b->staged_flushed = false; // released during sync
+    Node *c = idx.create_file("c"); // no staged at all
+
+    idx.release_flushed_staged();
+
+    CHECK(!a->staged);                 // flushed -> released so read goes to tape
+    CHECK(a->staged_flushed == false); // flag cleared
+    CHECK(b->staged != nullptr);       // not yet flushed -> kept for next sync
+    CHECK(!c->staged);                 // unaffected
+}
+
 // ── main ──────────────────────────────────────────────────────────────────────
 
 int main()
@@ -141,6 +158,7 @@ int main()
     test_directory_not_overwritten_by_file();
     test_sibling_files_unaffected();
     test_block_number_reset_on_overwrite();
+    test_release_flushed_staged();
 
     std::printf("=== %d passed, %d failed ===\n", g_pass, g_fail);
     return g_fail ? 1 : 0;
