@@ -22,8 +22,8 @@ mktapir_CPPFLAGS = $(LIBARCHIVE_CFLAGS) $(JSON_CFLAGS) $(CRYPTO_CFLAGS)
 mktapir_LDADD    = libtapir.a $(LIBARCHIVE_LIBS) $(CRYPTO_LIBS)
 
 # Unit tests (make check)
-check_PROGRAMS   = test_security test_index test_block_offset
-TESTS            = test_security test_index test_block_offset
+check_PROGRAMS   = test_security test_index test_block_offset test_tape_seq test_tape_seek
+TESTS            = test_security test_index test_block_offset test_tape_seq test_tape_seek
 
 test_security_SOURCES  = test_security.cpp
 test_security_CPPFLAGS = $(CRYPTO_CFLAGS)
@@ -38,3 +38,15 @@ test_index_LDADD    = libtapir.a $(CRYPTO_LIBS)
 test_block_offset_SOURCES  = test_block_offset.cpp test_tape_common.hpp
 test_block_offset_CPPFLAGS = $(LIBARCHIVE_CFLAGS) $(JSON_CFLAGS) $(CRYPTO_CFLAGS)
 test_block_offset_LDADD    = libtapir.a $(LIBARCHIVE_LIBS) $(CRYPTO_LIBS)
+
+# Optional hardware tests (share test_tape_common.hpp). Skip (exit 77) unless
+# TAPIR_TEST_DEVICE is set, e.g.:  TAPIR_TEST_DEVICE=/dev/nst0 make check
+#   test_tape_seq  — sequential read-back (on-tape data integrity)
+#   test_tape_seek — per-member random-access read (read_member / seek path)
+test_tape_seq_SOURCES   = test_tape_seq.cpp test_tape_common.hpp
+test_tape_seq_CPPFLAGS  = $(LIBARCHIVE_CFLAGS) $(JSON_CFLAGS) $(CRYPTO_CFLAGS)
+test_tape_seq_LDADD     = libtapir.a $(LIBARCHIVE_LIBS) $(CRYPTO_LIBS)
+
+test_tape_seek_SOURCES  = test_tape_seek.cpp test_tape_common.hpp
+test_tape_seek_CPPFLAGS = $(LIBARCHIVE_CFLAGS) $(JSON_CFLAGS) $(CRYPTO_CFLAGS)
+test_tape_seek_LDADD    = libtapir.a $(LIBARCHIVE_LIBS) $(CRYPTO_LIBS)
