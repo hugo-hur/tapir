@@ -59,11 +59,11 @@ namespace tapir::security
         char s[37];
         std::snprintf(s, sizeof s,
                       "%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x",
-                      std::to_integer<unsigned>(bytes[0]),  std::to_integer<unsigned>(bytes[1]),
-                      std::to_integer<unsigned>(bytes[2]),  std::to_integer<unsigned>(bytes[3]),
-                      std::to_integer<unsigned>(bytes[4]),  std::to_integer<unsigned>(bytes[5]),
-                      std::to_integer<unsigned>(bytes[6]),  std::to_integer<unsigned>(bytes[7]),
-                      std::to_integer<unsigned>(bytes[8]),  std::to_integer<unsigned>(bytes[9]),
+                      std::to_integer<unsigned>(bytes[0]), std::to_integer<unsigned>(bytes[1]),
+                      std::to_integer<unsigned>(bytes[2]), std::to_integer<unsigned>(bytes[3]),
+                      std::to_integer<unsigned>(bytes[4]), std::to_integer<unsigned>(bytes[5]),
+                      std::to_integer<unsigned>(bytes[6]), std::to_integer<unsigned>(bytes[7]),
+                      std::to_integer<unsigned>(bytes[8]), std::to_integer<unsigned>(bytes[9]),
                       std::to_integer<unsigned>(bytes[10]), std::to_integer<unsigned>(bytes[11]),
                       std::to_integer<unsigned>(bytes[12]), std::to_integer<unsigned>(bytes[13]),
                       std::to_integer<unsigned>(bytes[14]), std::to_integer<unsigned>(bytes[15]));
@@ -136,11 +136,27 @@ namespace tapir::security
     //     per frame is kept (in the index, or inline). Each frame is far under GCM's ~64 GiB/nonce size limit, and
     //     per-frame tags allow incremental authentication for random-access reads. Uniqueness holds because positions are
     //     written once per generation and the key changes per generation/volume.
-    std::array<std::byte, 32> SoftwareEncryption::derive_per_tape_key(std::array<std::byte, 32> master_key,
-                                                                      std::array<std::byte, 16> volume_uuid,
-                                                                      std::uint64_t write_generation)
+    std::array<std::byte, 32> SoftwareEncryption::derive_per_tape_key(const std::array<std::byte, 32> &master_key,
+                                                                      const std::array<std::byte, 16> &volume_uuid,
+                                                                      const std::uint64_t &write_generation)
     {
-        return Sha256::Oneshot(ByteConcat(master_key, volume_uuid, Uint64ToBigEndianBytes(write_generation)));
+        auto input = ByteConcat(volume_uuid, Uint64ToBigEndianBytes(write_generation));
+        std::array<std::byte, 32> out; //[EVP_MAX_MD_SIZE];
+        size_t out_len = 0;
+
+        if (!EVP_Q_mac(
+                nullptr,    // default libctx
+                "HMAC",     // MAC algorithm
+                nullptr,    // properties
+                "SHA256",   // digest
+                nullptr, 0, // params
+                reinterpret_cast<unsigned char *>(master_key.data()), master_key.size(),
+                reinterpret_cast<unsigned char *>(input.data()), input.size(),
+                reinterpret_cast<unsigned char *>(out.data()), out.size(), &out_len))
+        {
+            throw std::runtime_error("EVP_Q_mac failed");
+        }
+        return out;
     }
 
 } // namespace tapir::security

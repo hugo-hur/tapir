@@ -109,9 +109,9 @@ namespace tapir::security
     class SoftwareEncryption
     {
     private:
-        std::array<std::byte, 32> derive_per_tape_key(std::array<std::byte, 32> master_key,
-                                                      std::array<std::byte, 16> volume_uuid,
-                                                      std::uint64_t write_generation);
+        std::array<std::byte, 32> derive_per_tape_key(const std::array<std::byte, 32> &master_key,
+                                                      const std::array<std::byte, 16> &volume_uuid,
+                                                      const std::uint64_t &write_generation);
     };
 }
 
