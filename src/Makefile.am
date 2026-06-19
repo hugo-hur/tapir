@@ -22,8 +22,8 @@ mktapir_CPPFLAGS = $(LIBARCHIVE_CFLAGS) $(JSON_CFLAGS) $(CRYPTO_CFLAGS)
 mktapir_LDADD    = libtapir.a $(LIBARCHIVE_LIBS) $(CRYPTO_LIBS)
 
 # Unit tests (make check)
-check_PROGRAMS   = test_security test_index
-TESTS            = test_security test_index
+check_PROGRAMS   = test_security test_index test_block_offset
+TESTS            = test_security test_index test_block_offset
 
 test_security_SOURCES  = test_security.cpp
 test_security_CPPFLAGS = $(CRYPTO_CFLAGS)
@@ -32,3 +32,9 @@ test_security_LDADD    = libtapir.a $(CRYPTO_LIBS)
 test_index_SOURCES  = test_index.cpp
 test_index_CPPFLAGS = $(JSON_CFLAGS)
 test_index_LDADD    = libtapir.a $(CRYPTO_LIBS)
+
+# Device-free reproduction of the per-member block-offset read scenario. Always
+# runs (no hardware): simulates the tape block stream with a block-padded tar file.
+test_block_offset_SOURCES  = test_block_offset.cpp test_tape_common.hpp
+test_block_offset_CPPFLAGS = $(LIBARCHIVE_CFLAGS) $(JSON_CFLAGS) $(CRYPTO_CFLAGS)
+test_block_offset_LDADD    = libtapir.a $(LIBARCHIVE_LIBS) $(CRYPTO_LIBS)
