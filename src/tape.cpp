@@ -50,7 +50,7 @@ namespace tapir
     {
         if (verbose_)
             std::fprintf(stderr, "  tape: forward over %d file mark(s)\n", n);
-        if (!ctl(MTFSF, n)) return false;
+        if (!ctl(MTFSF, n)) { current_file_ = -1; return false; } // re-sync via rewind next time
         if (current_file_ >= 0) current_file_ += n;
         return true;
     }
@@ -58,7 +58,7 @@ namespace tapir
     {
         if (verbose_)
             std::fprintf(stderr, "  tape: back over %d file mark(s)\n", n);
-        if (!ctl(MTBSF, n)) return false;
+        if (!ctl(MTBSF, n)) { current_file_ = -1; return false; } // re-sync via rewind next time
         if (current_file_ >= 0) current_file_ -= n;
         return true;
     }
@@ -99,41 +99,51 @@ namespace tapir
     }
 
     // ── positioning ───────────────────────────────────────────────────────────────
+    // Pure: decide how to move from `current` (-1 = unknown) to `target`.
+    // Never bsf's past beginning-of-tape — seeking to file 0 (or from an unknown
+    // position) rewinds; backward seeks to file K>0 bsf over (current-K+1) <= current
+    // filemarks then step forward one. Unit-tested in test_seek_plan.cpp.
+    Tape::TapeSeek Tape::plan_seek(int current, int target)
+    {
+        TapeSeek p;
+        if (current >= 0 && current == target)
+            return p;                 // already there: no ops
+        if (current < 0)              // unknown position: full rewind + forward
+        {
+            p.rewind = true;
+            p.fsf = target;
+            return p;
+        }
+        if (target > current)         // ahead: forward-space, no rewind
+        {
+            p.fsf = target - current;
+            return p;
+        }
+        if (target == 0)              // behind, to BOT: rewind (never bsf past BOT)
+        {
+            p.rewind = true;
+            return p;
+        }
+        p.bsf = current - target + 1; // behind: back over the filemarks ...
+        p.fsf = 1;                    // ... then step forward onto the target file
+        return p;
+    }
+
     bool Tape::position_data(int tape_file)
     {
-        if (current_file_ >= 0 && current_file_ != tape_file)
-        {
-            const int delta = tape_file - current_file_;
-            if (delta > 0)
-            {
-                // Target is ahead: forward-space, no rewind needed.
-                if (verbose_)
-                    std::fprintf(stderr, "tape: fsf %d to reach tape file %d (currently at %d)\n",
-                                 delta, tape_file, current_file_);
-                return fsf(delta);
-            }
-            else
-            {
-                // Target is behind: bsf(|delta|+1) + fsf(1) without a full rewind.
-                // bsf(N+1) crosses N+1 filemarks backward, landing just before the
-                // filemark preceding tape_file; fsf(1) steps past it to file start.
-                const int back = -delta + 1;
-                if (verbose_)
-                    std::fprintf(stderr, "tape: bsf %d + fsf 1 to reach tape file %d (currently at %d)\n",
-                                 back, tape_file, current_file_);
-                return bsf(back) && fsf(1);
-            }
-        }
-        if (current_file_ == tape_file)
-            return true;
-
-        // Position unknown: fall back to full rewind + forward-space.
+        const TapeSeek p = plan_seek(current_file_, tape_file);
         if (verbose_)
-            std::fprintf(stderr, "tape: rewind + fsf %d to reach tape file %d (position unknown)\n",
-                         tape_file, tape_file);
-        if (!rewind())
+            std::fprintf(stderr, "tape: reach file %d from %d via%s%s%s\n", tape_file, current_file_,
+                         p.rewind ? " rewind" : "",
+                         p.bsf ? (p.rewind ? " + bsf" : " bsf") : "",
+                         p.fsf ? " + fsf" : (p.rewind || p.bsf ? "" : " (no-op)"));
+        if (p.rewind && !rewind())
             return false;
-        return tape_file > 0 ? fsf(tape_file) : true;
+        if (p.bsf > 0 && !bsf(p.bsf))
+            return false;
+        if (p.fsf > 0 && !fsf(p.fsf))
+            return false;
+        return true;
     }
 
     bool Tape::fsr(int64_t n)

@@ -61,6 +61,14 @@ namespace tapir
         int file_number();       // current tape file number (mt status), or -1 on error
         int64_t block_number();  // current absolute block address (mt_blkno), or -1 on error
 
+        // How to move the tape from file `current` (-1 = position unknown) to file
+        // `target`, expressed as: [rewind] then bsf(bsf) then fsf(fsf). Pure (no I/O)
+        // so it can be unit-tested. Invariant: it never emits a bsf that would cross
+        // beginning-of-tape — seeking to file 0 rewinds instead of bsf-ing past BOT
+        // (the bug that broke mktapir import), and bsf is always <= current.
+        struct TapeSeek { bool rewind = false; int bsf = 0; int fsf = 0; };
+        static TapeSeek plan_seek(int current, int target);
+
         // End-of-data survey in one pass: returns the number of tape files (or -1
         // on error) and sets `full` if the tape is at end-of-tape — i.e. there is
         // no room to append an index (e.g. a tar that spans onto another tape).
