@@ -270,16 +270,38 @@ namespace tapir
     bool Tape::read_member(int tape_file, int block_factor, int64_t block_num, int64_t block_offset,
                            const std::string &member, Fd &out_fd, uint64_t &out_size)
     {
-        (void)block_offset; // recorded in the index; not yet used for seeking
-        if (!seek_to(tape_file, block_num))
+        const int bsize = block_factor * 512;
+
+        // Fast path: position to the member's block, read that block in full, and
+        // hand libarchive the bytes from the header offset onward (the bytes in
+        // front belong to the previous member that shares this block).
+        if (block_num >= 0 && block_offset >= 0)
+        {
+            if (seek_to(tape_file, block_num))
+            {
+                Fd fd(::open(dev_.c_str(), O_RDONLY));
+                if (fd.valid())
+                {
+                    ArchiveReadPtr a = tar_open_at_block_offset(fd.get(), bsize, block_offset);
+                    if (a && tar_extract_member(a.get(), member, out_fd, out_size))
+                    {
+                        current_file_ = -1; // mid-file after extract
+                        return true;
+                    }
+                }
+            }
+            current_file_ = -1; // fast read failed — reposition cleanly for the fallback
+        }
+
+        // Fallback: scan the whole tape file from its start. Correct for any member,
+        // and for archives whose per-member offset was never recorded.
+        if (!position_data(tape_file))
             return false;
         Fd fd;
-        ArchiveReadPtr a = open_read(dev_, block_factor * 512, fd);
+        ArchiveReadPtr a = open_read(dev_, bsize, fd);
         if (!a)
             return false;
         const bool ok = tar_extract_member(a.get(), member, out_fd, out_size);
-        // Single-member extract may stop mid-archive; position within tape file is
-        // unknown, so invalidate to force a proper reposition on the next access.
         current_file_ = -1;
         return ok;
     }

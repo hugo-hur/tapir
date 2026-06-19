@@ -509,21 +509,22 @@ int main(int argc, char **argv)
     st.writer = std::make_unique<WriterThread>(*st.tape, bf, st.mtx, st.index);
 
     const auto flat = st.index.flat();
-    int missing_blocks = 0;
+    int slow_reads = 0; // files lacking a full (block + within-block offset) location
     for (const auto &f : flat)
-        if (f.block_number < 0)
-            ++missing_blocks;
+        if (f.block_number < 0 || f.block_offset < 0)
+            ++slow_reads;
 
     std::fprintf(stderr, "tapir: mounted %s -- volume %s, generation %llu, %zu file(s)\n",
                  device.c_str(),
                  st.index.volume_uuid().c_str(),
                  static_cast<unsigned long long>(st.index.latest_generation()),
                  flat.size());
-    if (missing_blocks > 0)
+    if (slow_reads > 0)
         std::fprintf(stderr,
-                     "tapir: WARNING: %d file(s) have no block offset — per-member reads will\n"
-                     "       fall back to linear scan. Run tfsck %s\n"
-                     "       to fill in block offsets and enable fast seeking.\n",
-                     missing_blocks, device.c_str());
+                     "tapir: NOTE: %d file(s) lack a within-block offset — reads of them use a\n"
+                     "       slower full-file scan (results are correct, just not seeked). Run:\n"
+                     "           tfsck %s -m %d\n"
+                     "       to record exact offsets and enable fast per-member reads.\n",
+                     slow_reads, device.c_str(), bf);
     return fuse_main(static_cast<int>(fargs.size()), fargs.data(), &tapir_ops, nullptr);
 }
