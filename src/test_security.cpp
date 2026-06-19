@@ -8,6 +8,8 @@
 
 #include <array>
 #include <cassert>
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <set>
 #include <stdexcept>
@@ -216,6 +218,58 @@ static void test_generated_uuids_have_v4_markers()
 
 // ── main ──────────────────────────────────────────────────────────────────────
 
+// ── per-tape key derivation (HMAC-SHA256) known-answer vectors ──────────────────
+
+static std::string to_hex(const std::array<std::byte, 32> &a)
+{
+    static const char d[] = "0123456789abcdef";
+    std::string s;
+    s.reserve(64);
+    for (std::byte b : a) {
+        const unsigned v = std::to_integer<unsigned>(b);
+        s += d[v >> 4];
+        s += d[v & 0xf];
+    }
+    return s;
+}
+
+// fill a 32-byte key with a repeated byte
+static std::array<std::byte, 32> key_fill(unsigned char v)
+{
+    std::array<std::byte, 32> k;
+    k.fill(std::byte(v));
+    return k;
+}
+
+static void test_kdf_vectors()
+{
+    std::puts("-- derive_per_tape_key: HMAC-SHA256(master_key, uuid || gen_BE) vectors");
+
+    // V1: master_key = 00..1f, uuid = 00..0f, generation = 1
+    std::array<std::byte, 32> mk1;
+    for (int i = 0; i < 32; ++i) mk1[i] = std::byte(i);
+    std::array<std::byte, 16> u1;
+    for (int i = 0; i < 16; ++i) u1[i] = std::byte(i);
+    CHECK(to_hex(SoftwareEncryption::derive_per_tape_key(mk1, u1, 1)) ==
+          "aca088d3035099913981fa82f51ba298e34160c223983e910cee594aecf362bf");
+
+    // V2: master_key = 0xAA×32, uuid = 0x55×16, generation = 0
+    std::array<std::byte, 16> u2;
+    u2.fill(std::byte(0x55));
+    CHECK(to_hex(SoftwareEncryption::derive_per_tape_key(key_fill(0xAA), u2, 0)) ==
+          "7406c65e9564bd2ceed15852b94e9d927fa85f25465988b5fe0894c99c281398");
+
+    // V3: master_key = 0xFF×32, uuid = 0f..00 (descending), generation = 0xDEADBEEFCAFEBABE
+    std::array<std::byte, 16> u3;
+    for (int i = 0; i < 16; ++i) u3[i] = std::byte(15 - i);
+    CHECK(to_hex(SoftwareEncryption::derive_per_tape_key(key_fill(0xFF), u3, 0xDEADBEEFCAFEBABEULL)) ==
+          "dee43c6686bcb82264ec4de491ef33608451aff2595e0c6195c85055f10093e8");
+
+    // sanity: changing only the generation changes the derived key
+    CHECK(SoftwareEncryption::derive_per_tape_key(mk1, u1, 1) !=
+          SoftwareEncryption::derive_per_tape_key(mk1, u1, 2));
+}
+
 int main()
 {
     std::puts("=== test_security: UuidV4 ===");
@@ -234,6 +288,7 @@ int main()
     test_bytes_ctor_known();
     test_to_bytes_roundtrip();
     test_generated_uuids_have_v4_markers();
+    test_kdf_vectors();
 
     std::printf("=== %d passed, %d failed ===\n", g_pass, g_fail);
     return g_fail ? 1 : 0;

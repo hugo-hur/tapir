@@ -108,10 +108,12 @@ namespace tapir::security
 
     class SoftwareEncryption
     {
-    private:
-        std::array<std::byte, 32> derive_per_tape_key(const std::array<std::byte, 32> &master_key,
-                                                      const std::array<std::byte, 16> &volume_uuid,
-                                                      const std::uint64_t &write_generation);
+    public:
+        // Per-tape key = HMAC-SHA256(master_key, volume_uuid || write_generation_BE).
+        // Stateless; public + static so it is covered by known-answer tests (test_security).
+        static std::array<std::byte, 32> derive_per_tape_key(const std::array<std::byte, 32> &master_key,
+                                                             const std::array<std::byte, 16> &volume_uuid,
+                                                             const std::uint64_t &write_generation);
     };
 }
 
