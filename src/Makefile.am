@@ -22,8 +22,8 @@ mktapir_CPPFLAGS = $(LIBARCHIVE_CFLAGS) $(JSON_CFLAGS) $(CRYPTO_CFLAGS)
 mktapir_LDADD    = libtapir.a $(LIBARCHIVE_LIBS) $(CRYPTO_LIBS)
 
 # Unit tests (make check)
-check_PROGRAMS   = test_security test_index test_block_offset test_tape_seq test_tape_seek
-TESTS            = test_security test_index test_block_offset test_tape_seq test_tape_seek
+check_PROGRAMS   = test_security test_index test_block_offset test_seek_plan test_tape_seq test_tape_seek
+TESTS            = test_security test_index test_block_offset test_seek_plan test_tape_seq test_tape_seek
 
 test_security_SOURCES  = test_security.cpp
 test_security_CPPFLAGS = $(CRYPTO_CFLAGS)
@@ -38,6 +38,11 @@ test_index_LDADD    = libtapir.a $(CRYPTO_LIBS)
 test_block_offset_SOURCES  = test_block_offset.cpp test_tape_common.hpp
 test_block_offset_CPPFLAGS = $(LIBARCHIVE_CFLAGS) $(JSON_CFLAGS) $(CRYPTO_CFLAGS)
 test_block_offset_LDADD    = libtapir.a $(LIBARCHIVE_LIBS) $(CRYPTO_LIBS)
+
+# Pure unit test of the tape seek-planner (the import-positioning bug). No hardware.
+test_seek_plan_SOURCES  = test_seek_plan.cpp
+test_seek_plan_CPPFLAGS = $(LIBARCHIVE_CFLAGS) $(CRYPTO_CFLAGS)
+test_seek_plan_LDADD    = libtapir.a $(LIBARCHIVE_LIBS) $(CRYPTO_LIBS)
 
 # Optional hardware tests (share test_tape_common.hpp). Skip (exit 77) unless
 # TAPIR_TEST_DEVICE is set, e.g.:  TAPIR_TEST_DEVICE=/dev/nst0 make check
