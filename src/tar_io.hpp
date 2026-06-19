@@ -39,6 +39,17 @@ namespace tapir
     // Extract a member into a fresh anonymous temp file; yields its Fd + size.
     bool tar_extract_member(struct archive *a, const std::string &member, Fd &out_fd, uint64_t &out_size);
 
+    // Open a read-archive on `fd` whose current position is the START of the
+    // physical block holding a member's tar header, where the header begins
+    // `block_offset` bytes into that block. The first block (`bsize` bytes) is read
+    // whole and libarchive is fed from the header onward, then it continues reading
+    // whole blocks from `fd`. Needed because a tape read returns one entire physical
+    // block — libarchive cannot be started mid-block by a short read. Use after
+    // positioning to a member's block (MTFSR on tape, lseek on a file). `fd` is
+    // borrowed (not closed). Returns nullptr on error. Pairs with the per-member
+    // tape_block + within-block offset recorded in the index.
+    ArchiveReadPtr tar_open_at_block_offset(int fd, int bsize, int64_t block_offset);
+
     // Write members into an opened write-archive (does NOT close it).
     bool tar_write_files(struct archive *a, const std::vector<OutFile> &files);
     bool tar_write_member(struct archive *a, const std::string &member, const std::string &data);

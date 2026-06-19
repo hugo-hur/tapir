@@ -9,6 +9,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 #include <fcntl.h>
 #include <unistd.h>
@@ -29,6 +30,74 @@ namespace tapir
         if (name == p)
             return true;
         return p[0] == '.' && p[1] == '/' && name == (p + 2);
+    }
+
+    // ── offset-correcting reader ────────────────────────────────────────────────
+    // A tape read returns one whole physical block, so libarchive cannot be started
+    // mid-block by a short read. tar_open_at_block_offset reads the block that holds
+    // a member's header in full, then feeds libarchive the bytes from the header
+    // onward (skipping the leading `block_offset` bytes — the tail of the previous
+    // member that shares the block) and continues reading whole blocks from the fd.
+    namespace
+    {
+        struct BlockOffsetSource
+        {
+            int fd;                       // borrowed read fd, positioned at the block start
+            std::vector<std::byte> block; // one physical block, reused for each read
+            std::size_t skip = 0;         // header offset within the first block
+            std::size_t first_len = 0;
+            bool first = true;
+        };
+
+        la_ssize_t bo_read(struct archive *, void *cd, const void **buf)
+        {
+            auto *s = static_cast<BlockOffsetSource *>(cd);
+            if (s->first) // serve the first block from `skip` onward (the header)
+            {
+                s->first = false;
+                *buf = s->block.data() + s->skip;
+                return static_cast<la_ssize_t>(s->first_len - s->skip);
+            }
+            const la_ssize_t n = ::read(s->fd, s->block.data(), s->block.size());
+            if (n < 0)
+                return -1;
+            *buf = s->block.data();
+            return n;
+        }
+
+        int bo_close(struct archive *, void *cd)
+        {
+            delete static_cast<BlockOffsetSource *>(cd);
+            return ARCHIVE_OK;
+        }
+    } // namespace
+
+    ArchiveReadPtr tar_open_at_block_offset(int fd, int bsize, int64_t block_offset)
+    {
+        if (fd < 0 || bsize <= 0 || block_offset < 0 || block_offset >= bsize)
+            return nullptr;
+
+        auto *s = new BlockOffsetSource;
+        s->fd = fd;
+        s->block.resize(static_cast<std::size_t>(bsize));
+        s->skip = static_cast<std::size_t>(block_offset);
+
+        const la_ssize_t n = ::read(fd, s->block.data(), s->block.size());
+        if (n <= block_offset) // header offset beyond the bytes actually present
+        {
+            delete s;
+            return nullptr;
+        }
+        s->first_len = static_cast<std::size_t>(n);
+
+        ArchiveReadPtr a(archive_read_new());
+        archive_read_support_filter_all(a.get());
+        archive_read_support_format_all(a.get());
+        // On failure, archive_read_free (via the ArchiveReadPtr deleter) invokes
+        // bo_close, freeing `s` — so there is no leak on the error path either.
+        if (archive_read_open2(a.get(), s, nullptr, bo_read, nullptr, bo_close) != ARCHIVE_OK)
+            return nullptr;
+        return a;
     }
 
     bool tar_read_member(struct archive *a, const std::string &member, std::string &out)
