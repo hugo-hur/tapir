@@ -19,6 +19,15 @@
 namespace tapir
 {
 
+    // Split a byte position into (block_index, within-block offset) given a physical
+    // block size. Returns {-1, -1} when either input is non-positive / invalid.
+    static inline void split_block_pos(la_int64_t pos, int64_t bsize,
+                                       int64_t &out_block, int64_t &out_offset)
+    {
+        if (bsize > 0 && pos >= 0) { out_block = pos / bsize; out_offset = pos % bsize; }
+        else                       { out_block = -1;           out_offset = -1; }
+    }
+
     // Match on the UTF-8 member name (locale-independent), tolerating a leading "./".
     static const char *epath(struct archive_entry *e)
     {
@@ -195,8 +204,7 @@ namespace tapir
             return false;
 #ifdef HAVE_ARCHIVE_WRITE_HEADER_POSITION
         const la_int64_t pos = archive_write_header_position(a);
-        out_block  = (bsize > 0 && pos >= 0) ? pos / bsize : -1;
-        out_offset = (bsize > 0 && pos >= 0) ? pos % bsize : -1;
+        split_block_pos(pos, bsize, out_block, out_offset);
 #else
         (void)bsize;
         out_block = out_offset = -1;
@@ -326,8 +334,8 @@ namespace tapir
             // after archive_write_header() — this is what archive_write_header_position()
             // was added to the tapir fork to provide.
             const la_int64_t pos = archive_write_header_position(out);
-            const int64_t block  = (bsize > 0 && pos >= 0) ? pos / bsize : -1;
-            const int64_t offset = (bsize > 0 && pos >= 0) ? pos % bsize : -1;
+            int64_t block = -1, offset = -1;
+            split_block_pos(pos, bsize, block, offset);
 
             const bool is_file = archive_entry_filetype(e) == AE_IFREG && archive_entry_hardlink(e) == nullptr;
             security::Sha256 sha;
@@ -411,8 +419,8 @@ namespace tapir
             // Byte offset of this member's header within the tape file, split into
             // the physical block it lands in and the offset inside that block.
             const la_int64_t pos = archive_read_header_position(a);
-            const int64_t block  = (bsize > 0 && pos >= 0) ? pos / bsize : 0;
-            const int64_t offset = (bsize > 0 && pos >= 0) ? pos % bsize : 0;
+            int64_t block = -1, offset = -1;
+            split_block_pos(pos, bsize, block, offset);
 
             const std::string name = normalize(epath(e));
             const time_t entry_mtime = archive_entry_mtime(e);
@@ -479,11 +487,11 @@ namespace tapir
 
 #ifdef HAVE_ARCHIVE_WRITE_HEADER_POSITION
             const la_int64_t pos = archive_write_header_position(out);
-            const int64_t block  = (bsize > 0 && pos >= 0) ? pos / bsize : -1;
-            const int64_t offset = (bsize > 0 && pos >= 0) ? pos % bsize : -1;
+            int64_t block = -1, offset = -1;
+            split_block_pos(pos, bsize, block, offset);
 #else
             (void)bsize;
-            const int64_t block = -1, offset = -1;
+            int64_t block = -1, offset = -1;
 #endif
 
             if (archive_entry_filetype(e.get()) != AE_IFREG ||
