@@ -423,6 +423,10 @@ namespace tapir
             if (!e)
                 return false;
             archive_entry_copy_sourcepath(e.get(), srcpath.c_str());
+            // Set pathname before disk-entry fill so archive_entry_pathname()
+            // is non-NULL; archive_read_disk_entry_from_file only fills stat
+            // fields (size, mtime, mode etc.) and does not touch pathname.
+            archive_entry_copy_pathname(e.get(), srcpath.c_str());
             if (archive_read_disk_entry_from_file(disk.get(), e.get(), -1, nullptr) != ARCHIVE_OK)
             {
                 std::fprintf(stderr, "warning: %s: %s\n",
