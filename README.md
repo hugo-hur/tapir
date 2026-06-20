@@ -111,14 +111,34 @@ Scans existing tar archives on tape and writes a cumulative index at EOD.
 
 Reads all tar variants (V7, ustar, GNU, pax, star) via libarchive.
 
-**Stream a tar from disk onto tape** (append):
+**Stream files onto tape** (append):
 
 ```sh
+# Re-stream an existing tar archive from disk:
 mktapir append <device-nst> <file.tar> [-b <block-factor>] [-m <manifest-bf>] [-v]
+
+# Create a tape file from disk paths listed on stdin (one per line):
+find /data -type f | mktapir append <device-nst> [-b <block-factor>] [-m <manifest-bf>] [-v]
+
+# Same, but read paths from a file instead of stdin:
+mktapir append <device-nst> -T <filelist> [-b <block-factor>] [-m <manifest-bf>] [-v]
 ```
 
-Re-streams a tar from disk into a new tape file at EOD and adds its contents
-to the existing index. Accepts compressed archives (`.tar.gz`, `.tar.xz`, etc.).
+Three input modes — all write a new tape file at EOD and update the index:
+
+- **`<file.tar>`** — re-streams the tar onto tape; each member inside is indexed
+  individually (name, size, SHA-256, block position). Accepts all compression formats
+  (`.tar.gz`, `.tar.xz`, `.tar.zst`, …) and all tar variants (V7, ustar, GNU, pax).
+- **No filename (stdin default)** — reads one absolute or relative disk path per line
+  from standard input and creates a new tar from those files. Each file is stored and
+  indexed as an individual member; the leading `/` is stripped from the archive member
+  name. Non-regular-file entries (directories, symlinks) are written as header-only
+  members. Files that cannot be opened emit a warning and are skipped non-fatally.
+- **`-T <filelist>`** — identical to stdin mode but reads paths from a file.
+
+> **Important distinction:** passing a `.tar` file via stdin or `-T` archives it as an
+> *opaque blob* — it appears in the FUSE mount as a single file `path/to/archive.tar`.
+> Only the positional `<file.tar>` argument extracts and indexes the tar's members.
 
 ### `tfsck` — verify and recovery
 
@@ -220,23 +240,30 @@ make check        # run unit tests
 PKG_CONFIG_PATH=/opt/lib/pkgconfig ./configure
 ```
 
-A custom/forked libarchive can already be used by overriding the precious
-variables (this skips the `pkg-config` lookup), e.g. for a statically-linked
-build against a local tree:
+A custom or forked libarchive can be selected with `--with-libarchive`:
 
 ```sh
-./configure \
-  LIBARCHIVE_CFLAGS="-I/path/to/libarchive/libarchive" \
-  LIBARCHIVE_LIBS="/path/to/libarchive/libarchive.a -lz -llzma -lzstd -lbz2 -lcrypto"
+# Use a pre-built fork at a specific path:
+./configure --with-libarchive=/opt/libarchive-fork
+
+# Build the bundled fork from the deps/libarchive submodule:
+git submodule update --init deps/libarchive
+./configure --with-libarchive=bundled
+
+# Force the system libarchive (error if archive_write_header_position absent):
+./configure --with-libarchive=system
 ```
 
-> **TODO — first-class custom-libarchive option:** add a `--with-libarchive=PATH`
-> (and/or `--with-bundled-libarchive` for a `third_party/libarchive` git submodule)
-> configure switch so the path doesn't have to be passed as raw `LIBARCHIVE_CFLAGS`/
-> `LIBARCHIVE_LIBS`. Motivation: a libarchive fork that exposes the output header
-> position would let the writer record exact `tape_block_offset` values (see the
-> per-member seeking TODO above). Gate the new-API call behind a configure link-test
-> (`#ifdef`) so tapir still builds against stock libarchive.
+By default `./configure` probes the system libarchive for
+`archive_write_header_position()` (the API that lets `mktapir append` record
+exact per-member block offsets in a single write pass). If it is absent and
+`deps/libarchive` is initialised, the bundled fork is built automatically as a
+static library and linked in; the system libarchive is not used at runtime.
+
+The bundled fork lives at `deps/libarchive` (git submodule, branch
+`HeaderPositionExtract`, `https://github.com/hugo-hur/libarchive`).
+`make dist` bootstraps and embeds the submodule source so release tarballs
+are self-contained.
 
 ---
 
@@ -312,16 +339,18 @@ the bytes from the header offset onward — so it lands on any member, not just 
 first in a multi-member tar. If the offset is unrecorded it falls back to a correct
 (slower) full-file scan.
 
-> **TODO — writer-side offset:** the background writer currently records `tape_block`
-> but leaves `tape_block_offset` unset, so freshly written files read via the slow
-> full-file fallback until a `tfsck <device> -m <bf>` pass fills the exact offsets.
-> Planned: have the writer record the offset too, **conservatively — only when the
-> member is provably ustar-representable** (short path, size <8 GiB, in-range
-> mtime/uid — i.e. no PAX extended header), leaving it `-1` otherwise. That keeps the
-> manifest honest (no guessed values); the rare non-representable member stays
-> slow-but-correct and `tfsck` fills it exactly later. (libarchive's write-side byte
-> counters can't give the header position, so this uses a running size-sum of
-> `512 + roundup(size, 512)` per member.)
+> **`mktapir append` records exact offsets** — `archive_write_header_position()`
+> (from the bundled libarchive fork) is called immediately after each
+> `archive_write_header()`, giving the header's byte position in the write stream.
+> Both the block number and the within-block offset are stored in the index, so any
+> file appended via `mktapir append` is directly seekable from the first mount,
+> with no `tfsck` pass needed.
+>
+> **TODO — FUSE writer-side offset:** files written through the FUSE mount (staged
+> and flushed by the background writer thread) currently record `tape_block` but
+> leave `tape_block_offset` unset. Those members read via the slower full-file scan
+> until a `tfsck` pass fills the exact offsets. Fixing this requires the same
+> `archive_write_header_position()` call in `writer.cpp`.
 
 Each manifest is cumulative and supersedes the previous one. On WORM tapes all
 prior manifests are preserved and recoverable via `tfsck --rollback` /
