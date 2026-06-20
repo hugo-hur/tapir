@@ -123,13 +123,16 @@ namespace tapir
         return false;
     }
 
-    bool tar_extract_member(struct archive *a, const std::string &member, Fd &out_fd, uint64_t &out_size)
+    bool tar_extract_member(struct archive *a, const std::string &member, Fd &out_fd, uint64_t &out_size,
+                            la_int64_t *out_header_pos)
     {
         struct archive_entry *e;
         while (archive_read_next_header(a, &e) == ARCHIVE_OK)
         {
             if (match(epath(e), member))
             {
+                if (out_header_pos)
+                    *out_header_pos = archive_read_header_position(a);
                 char tmpl[] = "/tmp/tapir-cacheXXXXXX";
                 Fd fd(mkstemp(tmpl));
                 if (!fd.valid())
@@ -152,6 +155,31 @@ namespace tapir
             archive_read_data_skip(a);
         }
         return false;
+    }
+
+    bool tar_extract_first_member(struct archive *a, Fd &out_fd, uint64_t &out_size)
+    {
+        struct archive_entry *e;
+        if (archive_read_next_header(a, &e) != ARCHIVE_OK)
+            return false;
+        char tmpl[] = "/tmp/tapir-cacheXXXXXX";
+        Fd fd(mkstemp(tmpl));
+        if (!fd.valid())
+            return false;
+        ::unlink(tmpl);
+        const void *b;
+        size_t n;
+        la_int64_t off;
+        int r;
+        while ((r = archive_read_data_block(a, &b, &n, &off)) == ARCHIVE_OK)
+            if (pwrite(fd.get(), b, n, static_cast<off_t>(off)) != static_cast<ssize_t>(n))
+                return false;
+        if (r != ARCHIVE_EOF)
+            return false;
+        const la_int64_t sz = archive_entry_size(e);
+        out_size = sz >= 0 ? static_cast<uint64_t>(sz) : 0;
+        out_fd = std::move(fd);
+        return true;
     }
 
     bool tar_write_file(struct archive *a, const OutFile &f,
