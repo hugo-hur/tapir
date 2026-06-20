@@ -50,8 +50,13 @@ namespace tapir
     // tape_block + within-block offset recorded in the index.
     ArchiveReadPtr tar_open_at_block_offset(int fd, int bsize, int64_t block_offset);
 
-    // Write members into an opened write-archive (does NOT close it).
-    bool tar_write_files(struct archive *a, const std::vector<OutFile> &files);
+    // Write one file into an opened write-archive (does NOT close it).
+    // out_block and out_offset receive the header's physical-block index and
+    // within-block byte offset from archive_write_header_position() (-1 if
+    // HAVE_ARCHIVE_WRITE_HEADER_POSITION is absent or bsize <= 0).
+    bool tar_write_file(struct archive *a, const OutFile &file,
+                        int64_t bsize, int64_t &out_block, int64_t &out_offset);
+
     bool tar_write_member(struct archive *a, const std::string &member, const std::string &data);
 
     // PAX extended-header magic written into every tapir manifest tape file and

@@ -154,32 +154,38 @@ namespace tapir
         return false;
     }
 
-    bool tar_write_files(struct archive *a, const std::vector<OutFile> &files)
+    bool tar_write_file(struct archive *a, const OutFile &f,
+                        int64_t bsize, int64_t &out_block, int64_t &out_offset)
     {
-        std::vector<char> buf(kReadBlock);
-        for (const auto &f : files)
+        ArchiveEntryPtr e(archive_entry_new());
+        archive_entry_set_pathname_utf8(e.get(), f.name.c_str());
+        archive_entry_set_size(e.get(), static_cast<la_int64_t>(f.size));
+        archive_entry_set_filetype(e.get(), AE_IFREG);
+        archive_entry_set_perm(e.get(), f.mode ? f.mode : kFileMode);
+        archive_entry_set_mtime(e.get(), f.mtime ? f.mtime : std::time(nullptr), 0);
+        if (archive_write_header(a, e.get()) != ARCHIVE_OK)
+            return false;
+#ifdef HAVE_ARCHIVE_WRITE_HEADER_POSITION
+        const la_int64_t pos = archive_write_header_position(a);
+        out_block  = (bsize > 0 && pos >= 0) ? pos / bsize : -1;
+        out_offset = (bsize > 0 && pos >= 0) ? pos % bsize : -1;
+#else
+        (void)bsize;
+        out_block = out_offset = -1;
+#endif
+        std::vector<std::byte> buf(kReadBlock);
+        off_t off = 0;
+        uint64_t remaining = f.size;
+        while (remaining > 0)
         {
-            ArchiveEntryPtr e(archive_entry_new());
-            archive_entry_set_pathname_utf8(e.get(), f.name.c_str());
-            archive_entry_set_size(e.get(), static_cast<la_int64_t>(f.size));
-            archive_entry_set_filetype(e.get(), AE_IFREG);
-            archive_entry_set_perm(e.get(), f.mode ? f.mode : kFileMode);
-            archive_entry_set_mtime(e.get(), f.mtime ? f.mtime : std::time(nullptr), 0);
-            if (archive_write_header(a, e.get()) != ARCHIVE_OK)
+            const size_t want = remaining < buf.size() ? static_cast<size_t>(remaining) : buf.size();
+            const ssize_t got = pread(f.fd, static_cast<void *>(buf.data()), want, off);
+            if (got <= 0)
                 return false;
-            off_t off = 0;
-            uint64_t remaining = f.size;
-            while (remaining > 0)
-            {
-                const size_t want = remaining < buf.size() ? static_cast<size_t>(remaining) : buf.size();
-                const ssize_t got = pread(f.fd, buf.data(), want, off);
-                if (got <= 0)
-                    return false;
-                if (archive_write_data(a, buf.data(), static_cast<size_t>(got)) < 0)
-                    return false;
-                off += got;
-                remaining -= static_cast<uint64_t>(got);
-            }
+            if (archive_write_data(a, buf.data(), static_cast<size_t>(got)) < 0)
+                return false;
+            off += got;
+            remaining -= static_cast<uint64_t>(got);
         }
         return true;
     }
