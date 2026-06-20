@@ -244,6 +244,28 @@ namespace tapir
         return s;
     }
 
+    // Drain the current member's remaining data blocks from `in`. When `out` is
+    // non-null each block is also copied to it; every block is fed to `sha` and its
+    // length added to `total` (callers needing only the copy can ignore both —
+    // header-only entries have no data, so sha/total simply stay empty). Returns
+    // true on a clean end-of-member, false on a read or write error.
+    static bool drain_member(struct archive *in, struct archive *out,
+                             security::Sha256 &sha, uint64_t &total)
+    {
+        const void *b;
+        size_t n;
+        la_int64_t off;
+        int r;
+        while ((r = archive_read_data_block(in, &b, &n, &off)) == ARCHIVE_OK)
+        {
+            if (out && archive_write_data(out, b, n) < 0)
+                return false;
+            sha.update(b, n);
+            total += n;
+        }
+        return r == ARCHIVE_EOF;
+    }
+
     bool tar_copy_members(
         struct archive *in, struct archive *out,
         const std::function<void(const std::string &, const std::string &, uint64_t, time_t, mode_t)> &cb)
@@ -261,21 +283,7 @@ namespace tapir
             const bool is_file = archive_entry_filetype(e) == AE_IFREG && archive_entry_hardlink(e) == nullptr;
             security::Sha256 sha;
             uint64_t total = 0;
-            const void *b;
-            size_t n;
-            la_int64_t off;
-            int rr;
-            while ((rr = archive_read_data_block(in, &b, &n, &off)) == ARCHIVE_OK)
-            {
-                if (archive_write_data(out, b, n) < 0)
-                    return false;
-                if (is_file)
-                {
-                    sha.update(b, n);
-                    total += n;
-                }
-            }
-            if (rr != ARCHIVE_EOF)
+            if (!drain_member(in, out, sha, total))
                 return false;
             if (is_file)
                 cb(name, sha.hex(), total, entry_mtime, entry_mode);
@@ -315,21 +323,7 @@ namespace tapir
             const bool is_file = archive_entry_filetype(e) == AE_IFREG && archive_entry_hardlink(e) == nullptr;
             security::Sha256 sha;
             uint64_t total = 0;
-            const void *b;
-            size_t n;
-            la_int64_t off;
-            int rr;
-            while ((rr = archive_read_data_block(in, &b, &n, &off)) == ARCHIVE_OK)
-            {
-                if (archive_write_data(out, b, n) < 0)
-                    return false;
-                if (is_file)
-                {
-                    sha.update(b, n);
-                    total += n;
-                }
-            }
-            if (rr != ARCHIVE_EOF)
+            if (!drain_member(in, out, sha, total))
                 return false;
             if (is_file)
                 cb(name, block, offset, sha.hex(), total, entry_mtime, entry_mode);
@@ -366,17 +360,8 @@ namespace tapir
             if (on_header)
                 on_header(name, block, is_tapir_index);
             security::Sha256 sha;
-            const void *b;
-            size_t n;
-            la_int64_t off;
-            int rr;
             uint64_t total = 0;
-            while ((rr = archive_read_data_block(a, &b, &n, &off)) == ARCHIVE_OK)
-            {
-                sha.update(b, n);
-                total += n;
-            }
-            if (rr != ARCHIVE_EOF)
+            if (!drain_member(a, nullptr, sha, total))
                 return false;
             cb(name, block, offset, sha.hex(), total, entry_mtime, entry_mode);
         }
