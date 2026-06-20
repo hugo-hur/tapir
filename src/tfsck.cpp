@@ -106,13 +106,8 @@ static int do_verify(const std::string &device, int bf, int mbf, bool verbose)
                 }
                 // Fill in the member's block + within-block offset from the scan so
                 // later reads can seek straight to it.
-                if (Node *n = index.resolve(name);
-                    n && n->data_tape_file == dtf && (n->block_number < 0 || n->block_offset < 0))
-                {
-                    n->block_number = block;
-                    n->block_offset = offset;
+                if (index.fill_block_location(name, dtf, block, offset))
                     ++reindexed;
-                }
                 if (it->second.empty() || it->second == sha)
                 {
                     ++verified;

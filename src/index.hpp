@@ -81,6 +81,12 @@ namespace tapir
         void add_file(const std::string &path, uint64_t size, const std::string &sha256,
                       int data_tape_file, int block_factor, time_t mtime = 0, mode_t mode = 0);
 
+        // Fill in the per-member block location (block_number + block_offset) for the node
+        // at `name` if it belongs to `tape_file` and the location is not yet recorded.
+        // Returns true if the node was updated. Shared by mktapir import and tfsck verify.
+        bool fill_block_location(const std::string &name, int tape_file,
+                                 int64_t block, int64_t offset);
+
         bool make_dir(const std::string &path);
         bool remove_dir(const std::string &path);
         bool unlink_file(const std::string &path); // index-only delete

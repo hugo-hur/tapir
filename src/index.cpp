@@ -149,6 +149,20 @@ namespace tapir
         }
         dirty_ = true;
     }
+    bool Index::fill_block_location(const std::string &name, int tape_file,
+                                   int64_t block, int64_t offset)
+    {
+        Node *n = resolve(name);
+        if (n && n->data_tape_file == tape_file &&
+            (n->block_number < 0 || n->block_offset < 0))
+        {
+            n->block_number = block;
+            n->block_offset = offset;
+            return true;
+        }
+        return false;
+    }
+
     bool Index::make_dir(const std::string &path)
     {
         return ensure_path(path, true) != nullptr;
