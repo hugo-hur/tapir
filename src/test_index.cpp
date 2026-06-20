@@ -48,6 +48,39 @@ static void test_add_new_file()
     CHECK(n->data_tape_file == 0);
 }
 
+// Guards the manifest-persistence half of mtime preservation device-free: a real
+// past mtime must survive serialize -> load, NOT collapse to 0 (which the FUSE
+// layer would then render as the mount's current date — the "after import all
+// mtimes were today" symptom). The hardware import/append tests cover the rest of
+// the path (header -> add_file) and the actual FUSE getattr visibility.
+static void test_mtime_survives_serialize_load()
+{
+    std::puts("-- mtime + fields survive a serialize -> load round-trip");
+    Index idx = make_index();
+    idx.add_file("a/keep.txt", 100, "sha_a", 0, 256, 1600000001, 0644);
+    idx.add_file("b/exec.sh",  200, "sha_b", 0, 256, 1600000002, 0755);
+
+    Index loaded;
+    loaded.load(idx.serialize(-1, 256));
+    const Node *a = loaded.resolve("a/keep.txt");
+    const Node *b = loaded.resolve("b/exec.sh");
+    CHECK(a != nullptr && b != nullptr);
+    CHECK(a && a->mtime == 1600000001); // the field whose loss showed "current date"
+    CHECK(a && a->size == 100);
+    CHECK(a && a->sha256 == "sha_a");
+    CHECK(b && b->mtime == 1600000002);
+    CHECK(b && b->mode == 0755);
+
+    // A genuinely-zero mtime must round-trip as 0 (FUSE then falls back to mount
+    // time by design) — it must not be mangled into something else.
+    Index z = make_index();
+    z.add_file("c/no_mtime", 5, "sha_c", 0, 256, 0, 0644);
+    Index zloaded;
+    zloaded.load(z.serialize(-1, 256));
+    const Node *c = zloaded.resolve("c/no_mtime");
+    CHECK(c && c->mtime == 0);
+}
+
 static void test_last_occurrence_wins()
 {
     std::puts("-- add_file: second call with same path overwrites first (last wins)");
@@ -153,6 +186,7 @@ int main()
     std::puts("=== test_index: add_file last-occurrence-wins ===");
 
     test_add_new_file();
+    test_mtime_survives_serialize_load();
     test_last_occurrence_wins();
     test_last_occurrence_across_tape_files();
     test_directory_not_overwritten_by_file();
