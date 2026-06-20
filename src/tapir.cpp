@@ -93,15 +93,6 @@ namespace
         return (path && path[0] == '/') ? path + 1 : path;
     }
 
-    Fd make_temp()
-    {
-        char tmpl[] = "/tmp/tapir-writeXXXXXX";
-        int fd = mkstemp(tmpl);
-        if (fd >= 0)
-            ::unlink(tmpl);
-        return Fd(fd);
-    }
-
     void fill_stat(const Node *n, struct stat *st)
     {
         std::memset(st, 0, sizeof(*st));
@@ -220,7 +211,7 @@ namespace
         auto h = std::make_unique<WriteHandle>();
         h->path = path;
         h->node = n;
-        h->fd = make_temp();
+        h->fd = make_temp_fd();
         if (!h->fd.valid())
             return -EIO;
         n->writing = h.get();

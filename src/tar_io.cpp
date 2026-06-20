@@ -146,11 +146,9 @@ namespace tapir
             }
             if (out_header_pos)
                 *out_header_pos = archive_read_header_position(a);
-            char tmpl[] = "/tmp/tapir-cacheXXXXXX";
-            Fd fd(mkstemp(tmpl));
+            Fd fd = make_temp_fd();
             if (!fd.valid())
                 return false;
-            ::unlink(tmpl);
             const void *b;
             size_t n;
             la_int64_t off;

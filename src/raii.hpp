@@ -18,6 +18,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <string>
 
@@ -76,6 +77,17 @@ namespace tapir
     private:
         int fd_ = -1;
     };
+
+    // Returns an Fd to a newly created, immediately unlinked temp file.
+    // Returns an invalid Fd on failure — callers check Fd::valid().
+    inline Fd make_temp_fd()
+    {
+        char tmpl[] = "/tmp/tapir-XXXXXX";
+        const int fd = mkstemp(tmpl);
+        if (fd >= 0)
+            ::unlink(tmpl);
+        return Fd(fd);
+    }
 
     // ── libarchive handles ────────────────────────────────────────────────────────
     // (OpenSSL EVP digest contexts are wrapped in security.hpp, where the crypto lives.)
