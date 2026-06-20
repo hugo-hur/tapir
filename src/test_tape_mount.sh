@@ -2,98 +2,23 @@
 # SPDX-License-Identifier: LGPL-2.1-or-later
 # Copyright (C) 2026 Hugo Hurskainen
 #
-# test_tape_mount.sh — hardware test of the FUSE mount + file I/O path.
+# test_tape_mount.sh — hardware test of the FUSE mount + file I/O path (phase 1
+# of the manual tapetest.sh). Exercises what the C++ tape tests do NOT: the tapir
+# FUSE mount, writing real files through the kernel, read-after-write while
+# staged, round-tripping across remounts, permission sealing, index-only delete,
+# and tfsck verify / rollback. Self-contained — generates its own data.
 #
-# Exercises the parts of the stack the C++ tape tests do NOT: the `tapir` FUSE
-# mount, writing real files through the kernel, read-after-write while staged,
-# round-tripping across remounts, permission sealing, index-only delete, and
-# tfsck verify / rollback. A trimmed, self-contained port of phase 1 of the
-# manual tapetest.sh (it generates its own data — no external big file).
-#
-# Parameterisation matches the C++ hardware tests (see test_tape_common.hpp):
-#   TAPIR_TEST_DEVICE        no-rewind scratch tape (…-nst). REQUIRED, else SKIP.
-#   TAPIR_TEST_BLOCK_FACTOR  blocking factor ×512 (default 256 = 128 KiB).
-#   TAPIR_TEST_BIGSIZE       bytes for the "large file" case (default 8 MiB).
-#                            Set e.g. 5368709121 to exercise the >4 GiB off_t path.
-#   TAPIR_BIN_DIR            where tapir/tfsck/mktapir live (default: build dir,
-#                            exported by the Makefile's AM_TESTS_ENVIRONMENT).
-#
-#   make check                              -> SKIP (exit 77), no hardware touched
-#   TAPIR_TEST_DEVICE=/dev/nst0 make check  -> runs against that scratch drive
-#
-# WARNING: --force reformats the tape; only point this at a SCRATCH cartridge.
-# Exit: 0 all passed, 1 a check failed, 77 skipped (no device / no fusermount3).
+# SKIP (exit 77) unless TAPIR_TEST_DEVICE points at a scratch no-rewind tape.
+# See test_tape_lib.sh for the full parameterisation. WARNING: --force reformats
+# the tape; only point this at a SCRATCH cartridge.
 
 set -u
-
-DEV="${TAPIR_TEST_DEVICE:-}"
-if [ -z "$DEV" ]; then
-    echo "SKIP: set TAPIR_TEST_DEVICE=<scratch no-rewind tape> to run"
-    exit 77
-fi
-if ! command -v fusermount3 >/dev/null 2>&1; then
-    echo "SKIP: fusermount3 not found — cannot exercise the FUSE mount"
-    exit 77
-fi
-
-BF="${TAPIR_TEST_BLOCK_FACTOR:-256}"
-BIGSIZE="${TAPIR_TEST_BIGSIZE:-$((8 * 1024 * 1024))}"
-BIN="${TAPIR_BIN_DIR:-.}"
-
-for tool in tapir tfsck mktapir; do
-    if [ ! -x "$BIN/$tool" ]; then
-        echo "SKIP: $BIN/$tool not built — run from the build tree"
-        exit 77
-    fi
-done
-
-WORK="$(mktemp -d "${TMPDIR:-/tmp}/tapir-mount-test.XXXXXX")"
-MNT="$WORK/mnt"; SRC="$WORK/src"
-mkdir -p "$MNT" "$SRC"
-
-pass=0; fail=0
-TAPIR_PID=""
-declare -A SHA
-
-ts(){ date '+%H:%M:%S'; }
-say(){ echo "[$(ts)] $*"; }
-ok(){  pass=$((pass+1)); say "PASS  $1 ${2:+| $2}"; }
-bad(){ fail=$((fail+1)); say "FAIL  $1 ${2:+| $2}"; }
-res(){ if [ "$1" -eq 0 ]; then ok "$2" "${3:-}"; else bad "$2" "${3:-}"; fi; }
-y(){ [ "$1" = "$2" ] && echo 0 || echo 1; }            # equality -> 0/1 for res()
-shaof(){ sha256sum "$1" 2>/dev/null | awk '{print $1}'; }
-mkf(){ head -c "$2" /dev/urandom > "$SRC/$1"; SHA[$1]=$(shaof "$SRC/$1"); }   # name size
-
-# Background-mount tapir and wait for the mountpoint to appear (or the process
-# to die). Returns non-zero if the mount never came up.
-mnt_up(){ local i=0
-    "$BIN/tapir" "$DEV" "$MNT" -b "$BF" -f >>"$WORK/tapir.log" 2>&1 &
-    TAPIR_PID=$!
-    while ! mountpoint -q "$MNT"; do
-        sleep 1; i=$((i+1))
-        kill -0 "$TAPIR_PID" 2>/dev/null || return 1
-        [ $i -gt 120 ] && return 1
-    done
-    return 0; }
-# Unmount and wait for tapir to flush its manifest and exit. The writer can take
-# a while to drain to tape, so allow a generous timeout before force-killing.
-mnt_down(){ local i=0
-    fusermount3 -u "$MNT" 2>/dev/null
-    while kill -0 "$TAPIR_PID" 2>/dev/null; do
-        sleep 2; i=$((i+1))
-        [ $i -gt 1200 ] && { kill -9 "$TAPIR_PID" 2>/dev/null; return 1; }
-    done
-    return 0; }
-
-cleanup(){
-    mountpoint -q "$MNT" && fusermount3 -u "$MNT" 2>/dev/null
-    [ -n "$TAPIR_PID" ] && kill -0 "$TAPIR_PID" 2>/dev/null && kill -9 "$TAPIR_PID" 2>/dev/null
-    rm -rf "$WORK"
-}
-trap cleanup EXIT
+TT_NAME=mount
+. "${TAPIR_TEST_SRCDIR:-.}/test_tape_lib.sh"
+tt_require_device
+tt_init
 
 say "=== test_tape_mount on $DEV (block factor $BF = $((BF * 512 / 1024)) KiB) ==="
-command -v mt >/dev/null 2>&1 && mt -f "$DEV" setblk 0 >/dev/null 2>&1   # variable block mode
 
 # ── format + empty mount ──────────────────────────────────────────────────────
 "$BIN/mktapir" "$DEV" --force -m "$BF" >>"$WORK/mktapir.log" 2>&1
@@ -172,6 +97,4 @@ if mnt_up; then
     mnt_down
 else bad "rollback_restored" "mount failed"; fi
 
-say "=== done: $pass passed, $fail failed ==="
-[ "$fail" -eq 0 ] || exit 1
-exit 0
+tt_finish
