@@ -22,8 +22,8 @@ mktapir_CPPFLAGS = $(LIBARCHIVE_CFLAGS) $(JSON_CFLAGS) $(CRYPTO_CFLAGS)
 mktapir_LDADD    = libtapir.a $(LIBARCHIVE_LIBS) $(CRYPTO_LIBS)
 
 # Unit tests (make check)
-check_PROGRAMS   = test_security test_index test_cli test_block_offset test_seek_plan test_tape_seq test_tape_seek
-TESTS            = test_security test_index test_cli test_block_offset test_seek_plan test_tape_seq test_tape_seek \
+check_PROGRAMS   = test_security test_index test_cli test_block_offset test_tar_io test_seek_plan test_tape_seq test_tape_seek
+TESTS            = test_security test_index test_cli test_block_offset test_tar_io test_seek_plan test_tape_seq test_tape_seek \
                    test_tape_mount.sh test_tape_import.sh test_tape_import_fix.sh test_tape_upgrade.sh
 
 # The shell tests source test_tape_lib.sh and drive the binaries by path; tell
@@ -54,6 +54,12 @@ test_cli_LDADD    = libtapir.a $(CRYPTO_LIBS)
 test_block_offset_SOURCES  = test_block_offset.cpp test_tape_common.hpp
 test_block_offset_CPPFLAGS = $(LIBARCHIVE_CFLAGS) $(JSON_CFLAGS) $(CRYPTO_CFLAGS)
 test_block_offset_LDADD    = libtapir.a $(LIBARCHIVE_LIBS) $(CRYPTO_LIBS)
+
+# Device-free unit tests for tar_io: PAX magic round-trip, is_tapir_index
+# detection, tar_read_member, and member-name normalisation.
+test_tar_io_SOURCES  = test_tar_io.cpp test_tape_common.hpp
+test_tar_io_CPPFLAGS = $(LIBARCHIVE_CFLAGS) $(JSON_CFLAGS) $(CRYPTO_CFLAGS)
+test_tar_io_LDADD    = libtapir.a $(LIBARCHIVE_LIBS) $(CRYPTO_LIBS)
 
 # Pure unit test of the tape seek-planner (the import-positioning bug). No hardware.
 test_seek_plan_SOURCES  = test_seek_plan.cpp
