@@ -468,7 +468,7 @@ int main(int argc, char **argv)
     if (device.empty() || fargs.size() < 2)
     {
         std::fprintf(stderr,
-                     "tapir -- read/append/delete FUSE mount of a tar tape archive\n"
+                     "tapir " PACKAGE_VERSION " -- read/append/delete FUSE mount of a tar tape archive\n"
                      "usage: %s <tape-device> <mountpoint> [-b N] [fuse options]\n",
                      argv[0]);
         return 2;

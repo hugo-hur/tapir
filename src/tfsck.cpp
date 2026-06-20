@@ -447,7 +447,7 @@ static int do_upgrade_manifest(const std::string &device, int mbf)
 static void usage(const char *argv0)
 {
     std::fprintf(stderr,
-                 "tfsck — verify and recovery tool for tapir tape archives\n"
+                 "tfsck " PACKAGE_VERSION " — verify and recovery tool for tapir tape archives\n"
                  "usage:\n"
                  "  %s <device> [-b N] [-m N] [-v]\n"
                  "      Verify all indexed files against their SHA-256 checksums.\n"

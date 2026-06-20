@@ -357,7 +357,7 @@ static int do_append(const std::string &dev, const std::string &tarpath, int bf,
 static void usage(const char *argv0)
 {
     std::fprintf(stderr,
-                 "mktapir — build/convert the tapir index on a tape\n"
+                 "mktapir " PACKAGE_VERSION " — build/convert the tapir index on a tape\n"
                  "usage:\n"
                  "  %s <tape-device> [-m <manifest-bf>] [--force]\n"
                  "      Write a fresh empty tapir index on a blank tape. Refuses if the tape\n"
