@@ -23,7 +23,14 @@ mktapir_LDADD    = libtapir.a $(LIBARCHIVE_LIBS) $(CRYPTO_LIBS)
 
 # Unit tests (make check)
 check_PROGRAMS   = test_security test_index test_block_offset test_seek_plan test_tape_seq test_tape_seek
-TESTS            = test_security test_index test_block_offset test_seek_plan test_tape_seq test_tape_seek
+TESTS            = test_security test_index test_block_offset test_seek_plan test_tape_seq test_tape_seek \
+                   test_tape_mount.sh
+
+# The shell mount test drives the binaries by path; tell it where they are so it
+# works under VPATH builds too. `make check` already builds them via check-am's
+# all-am prerequisite, so no extra dependency is needed here.
+AM_TESTS_ENVIRONMENT = TAPIR_BIN_DIR='$(abs_builddir)'; export TAPIR_BIN_DIR;
+EXTRA_DIST           = test_tape_mount.sh
 
 test_security_SOURCES  = test_security.cpp
 test_security_CPPFLAGS = $(CRYPTO_CFLAGS)

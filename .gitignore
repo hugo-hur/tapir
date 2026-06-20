@@ -58,3 +58,4 @@ __pycache__/
 src/test*
 !src/test_*.cpp
 !src/test_*.hpp
+!src/test_*.sh
