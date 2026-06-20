@@ -1,0 +1,4 @@
+[submodule "deps/libarchive"]
+	path = deps/libarchive
+	url = https://github.com/hugo-hur/libarchive.git
+	branch = HeaderPositionExtract

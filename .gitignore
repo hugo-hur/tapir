@@ -46,6 +46,11 @@ config.cache
 /src/tfsck
 /src/mktapir
 
+# ── bundled libarchive (--with-libarchive=bundled) ───────────────────────────
+/bundled-libarchive-build/
+/bundled-libarchive/
+/bundled-libarchive.log
+
 # ── editor / misc ─────────────────────────────────────────────────────────────
 *~
 __pycache__/

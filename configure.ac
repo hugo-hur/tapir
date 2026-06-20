@@ -78,27 +78,166 @@ AS_IF([test "x$have_std_print" = "xyes"],
   [AC_DEFINE([HAVE_STD_PRINT], [1], [Define if <print>/std::print is usable.])])
 
 # ── 3. usable libarchive ──────────────────────────────────────────────────────
-# Prefer pkg-config for correct flags; fall back to default search paths.
-PKG_PROG_PKG_CONFIG
-PKG_CHECK_MODULES([LIBARCHIVE], [libarchive >= 3.0.0],
-                  [have_libarchive=yes],
-                  [have_libarchive=no])
+# archive_write_header_position() lets mktapir append record exact tape_block /
+# tape_block_offset in one write pass without a second tape read.  It is not in
+# upstream libarchive; it lives in the tapir fork (deps/libarchive submodule,
+# branch HeaderPositionExtract).
+#
+# Detection strategy (default / auto):
+#   1. Locate system libarchive via pkg-config or default search paths.
+#   2. Link-test for archive_write_header_position().
+#   3a. Feature present → use system as-is.
+#   3b. Feature absent + deps/libarchive initialised → auto-build the fork.
+#   3c. Feature absent + submodule missing → warn, continue without offsets.
+#
+# Overrides:
+#   --with-libarchive=bundled   Always build deps/libarchive (useful to force
+#                               the fork even if the system has the feature).
+#   --with-libarchive=system    Use system only; error if feature is absent.
+#   --with-libarchive=PATH      Use the installation at PATH (include/lib[64]).
+#
+AC_ARG_WITH([libarchive],
+  [AS_HELP_STRING([--with-libarchive=@<:@bundled|system|PATH@:>@],
+     [force bundled fork, use only system libarchive (error if feature absent),
+      or use the installation at PATH; default: auto — system if
+      archive_write_header_position is present, bundled fork otherwise])],
+  [with_libarchive=$withval],
+  [with_libarchive=auto])
 
-AS_IF([test "x$have_libarchive" != "xyes"], [
-  AC_MSG_NOTICE([pkg-config did not provide libarchive; trying default paths])
+PKG_PROG_PKG_CONFIG
+
+dnl Absolute path to the submodule source tree (used for auto-fallback check too).
+tapir_la_src="$(cd "${srcdir}" && pwd)/deps/libarchive"
+tapir_use_bundled=no
+
+dnl ── Step 1: resolve LIBARCHIVE_CFLAGS / LIBARCHIVE_LIBS ───────────────────
+AS_IF([test "x$with_libarchive" = "xbundled"], [
+  dnl Force bundled; skip system probe entirely.
+  tapir_use_bundled=yes
+
+], [test "x$with_libarchive" != "xauto" && test "x$with_libarchive" != "xsystem"], [
+  dnl Explicit PATH: set flags directly, no system probe, no auto-fallback.
+  la_libdir="${with_libarchive}/lib"
+  AS_IF([test -d "${with_libarchive}/lib64"], [la_libdir="${with_libarchive}/lib64"])
+  LIBARCHIVE_CFLAGS="-I${with_libarchive}/include"
+  AS_IF([test -n "$PKG_CONFIG" && test -f "${la_libdir}/pkgconfig/libarchive.pc"], [
+    la_old_pkgpath="$PKG_CONFIG_PATH"
+    PKG_CONFIG_PATH="${la_libdir}/pkgconfig${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
+    export PKG_CONFIG_PATH
+    LIBARCHIVE_LIBS=$("$PKG_CONFIG" --libs --static libarchive 2>/dev/null)
+    PKG_CONFIG_PATH="$la_old_pkgpath"
+    export PKG_CONFIG_PATH
+  ])
+  AS_IF([test -z "$LIBARCHIVE_LIBS"], [
+    LIBARCHIVE_LIBS="-L${la_libdir} -larchive -Wl,-rpath,${la_libdir}"
+  ])
+  have_libarchive=yes
+  AC_MSG_NOTICE([libarchive: using installation at ${with_libarchive}])
+
+], [
+  dnl Auto or system: locate via pkg-config, then default paths.
+  PKG_CHECK_MODULES([LIBARCHIVE], [libarchive >= 3.0.0],
+                    [have_libarchive=yes],
+                    [have_libarchive=no])
+  AS_IF([test "x$have_libarchive" != "xyes"], [
+    AC_MSG_NOTICE([pkg-config did not find libarchive; trying default paths])
+    AC_LANG_PUSH([C++])
+    AC_CHECK_HEADER([archive.h], [],
+      [AC_MSG_ERROR([archive.h not found — install libarchive-dev or use --with-libarchive=bundled])])
+    AC_CHECK_HEADER([archive_entry.h], [],
+      [AC_MSG_ERROR([archive_entry.h not found — install libarchive-dev or use --with-libarchive=bundled])])
+    AC_SEARCH_LIBS([archive_read_new], [archive],
+      [LIBARCHIVE_LIBS="-larchive"],
+      [AC_MSG_ERROR([libarchive not found — install libarchive-dev or use --with-libarchive=bundled])])
+    AC_LANG_POP([C++])
+    LIBARCHIVE_CFLAGS=""
+    have_libarchive=yes
+  ])
+
+  dnl ── Step 2: probe system libarchive for archive_write_header_position ───
+  ax_save_CPPFLAGS="$CPPFLAGS"; CPPFLAGS="$CPPFLAGS $LIBARCHIVE_CFLAGS"
+  ax_save_LIBS="$LIBS";         LIBS="$LIBARCHIVE_LIBS $LIBS"
   AC_LANG_PUSH([C++])
-  AC_CHECK_HEADER([archive.h], [],
-    [AC_MSG_ERROR([archive.h not found — install libarchive development files (e.g. libarchive-dev)])])
-  AC_CHECK_HEADER([archive_entry.h], [],
-    [AC_MSG_ERROR([archive_entry.h not found — install libarchive development files])])
-  AC_SEARCH_LIBS([archive_read_new], [archive],
-    [LIBARCHIVE_LIBS="-larchive"],
-    [AC_MSG_ERROR([libarchive shared library not found])])
+  AC_MSG_CHECKING([whether system libarchive has archive_write_header_position])
+  AC_LINK_IFELSE(
+    [AC_LANG_PROGRAM([[#include <archive.h>]],
+       [[struct archive *a = archive_write_new();
+         la_int64_t p = archive_write_header_position(a); (void)p;
+         return archive_write_free(a);]])],
+    [AC_MSG_RESULT([yes])],
+    [AC_MSG_RESULT([no — checking fallback])
+     dnl Feature absent: decide based on --with-libarchive value.
+     AS_IF([test "x$with_libarchive" = "xsystem"], [
+       AC_MSG_ERROR([--with-libarchive=system: system libarchive lacks
+archive_write_header_position.  Drop --with-libarchive=system to let configure
+auto-build the bundled fork, or run:  git submodule update --init deps/libarchive])
+     ], [test -f "${tapir_la_src}/configure.ac"], [
+       AC_MSG_NOTICE([auto-building bundled libarchive fork (deps/libarchive)])
+       tapir_use_bundled=yes
+     ], [
+       AC_MSG_WARN([system libarchive lacks archive_write_header_position and the
+deps/libarchive submodule is not initialised.  mktapir append will record
+block=-1 for all members (tfsck can fill them in later).
+To enable single-pass block offsets:
+  git submodule update --init deps/libarchive && ./configure])
+     ])
+    ])
   AC_LANG_POP([C++])
-  LIBARCHIVE_CFLAGS=""
+  CPPFLAGS="$ax_save_CPPFLAGS"; LIBS="$ax_save_LIBS"
 ])
 
-# Functional "usable" gate — runs regardless of how the flags were found.
+dnl ── Step 3: build the bundled fork if flagged ──────────────────────────────
+dnl Shared by --with-libarchive=bundled and the auto-fallback path above.
+AS_IF([test "x$tapir_use_bundled" = "xyes"], [
+  AS_IF([! test -f "${tapir_la_src}/configure.ac"], [
+    AC_MSG_ERROR([deps/libarchive submodule is not initialised.
+Run:  git submodule update --init deps/libarchive])])
+  AS_IF([! test -f "${tapir_la_src}/configure"], [
+    AC_MSG_NOTICE([Bootstrapping autotools in deps/libarchive (build/autogen.sh) ...])
+    (cd "${tapir_la_src}" && sh build/autogen.sh >/dev/null 2>&1)
+    AS_IF([! test -f "${tapir_la_src}/configure"], [
+      AC_MSG_ERROR([autogen.sh did not produce a configure script in deps/libarchive])])
+  ])
+  la_build="${ac_pwd}/bundled-libarchive-build"
+  la_inst="${ac_pwd}/bundled-libarchive"
+  la_log="${ac_pwd}/bundled-libarchive.log"
+  AS_MKDIR_P(["${la_build}"])
+  AC_MSG_NOTICE([Configuring bundled libarchive (log: bundled-libarchive.log) ...])
+  (cd "${la_build}" && "${tapir_la_src}/configure" \
+      --prefix="${la_inst}" \
+      --disable-shared --enable-static \
+      --with-pic \
+      --without-openssl --without-xml2 --without-expat \
+      --without-nettle --without-mbedtls \
+      --disable-bsdtar --disable-bsdcpio \
+      --disable-dependency-tracking) >"${la_log}" 2>&1
+  AS_IF([test $? -ne 0], [
+    AC_MSG_ERROR([bundled libarchive configure failed — see ${la_log}])])
+  AC_MSG_NOTICE([Building bundled libarchive ...])
+  (cd "${la_build}" && ${MAKE:-make} install) >>"${la_log}" 2>&1
+  AS_IF([test $? -ne 0], [
+    AC_MSG_ERROR([bundled libarchive build failed — see ${la_log}])])
+  AC_MSG_NOTICE([Bundled libarchive installed (static) at ${la_inst}])
+  dnl pkg-config --static gives the full link line (zlib, bz2, lzma, etc.).
+  la_libdir="${la_inst}/lib"
+  AS_IF([test -d "${la_inst}/lib64"], [la_libdir="${la_inst}/lib64"])
+  LIBARCHIVE_CFLAGS="-I${la_inst}/include"
+  AS_IF([test -n "$PKG_CONFIG" && test -f "${la_libdir}/pkgconfig/libarchive.pc"], [
+    la_old_pkgpath="$PKG_CONFIG_PATH"
+    PKG_CONFIG_PATH="${la_libdir}/pkgconfig${PKG_CONFIG_PATH:+:${PKG_CONFIG_PATH}}"
+    export PKG_CONFIG_PATH
+    LIBARCHIVE_LIBS=$("$PKG_CONFIG" --libs --static libarchive 2>/dev/null)
+    PKG_CONFIG_PATH="$la_old_pkgpath"
+    export PKG_CONFIG_PATH
+  ])
+  AS_IF([test -z "$LIBARCHIVE_LIBS"], [
+    LIBARCHIVE_LIBS="-L${la_libdir} -larchive -lz -lbz2 -llzma"
+  ])
+  have_libarchive=yes
+  with_libarchive="${la_inst}"
+])
+
+dnl ── Functional gate: PAX writer usable + archive_write_header_position ─────
 ax_save_CPPFLAGS="$CPPFLAGS"
 ax_save_LIBS="$LIBS"
 CPPFLAGS="$CPPFLAGS $LIBARCHIVE_CFLAGS"
@@ -121,6 +260,18 @@ AC_LINK_IFELSE(
   [AC_MSG_RESULT([yes])],
   [AC_MSG_RESULT([no])
    AC_MSG_ERROR([a usable libarchive >= 3.0.0 with PAX support was not found])])
+AC_MSG_CHECKING([for archive_write_header_position])
+AC_LINK_IFELSE(
+  [AC_LANG_PROGRAM(
+     [[#include <archive.h>]],
+     [[struct archive *a = archive_write_new();
+       la_int64_t p = archive_write_header_position(a);
+       (void)p;
+       return archive_write_free(a);]])],
+  [AC_MSG_RESULT([yes])
+   AC_DEFINE([HAVE_ARCHIVE_WRITE_HEADER_POSITION], [1],
+     [Define if archive_write_header_position() is available (tapir libarchive fork).])],
+  [AC_MSG_RESULT([no — append will record block=-1])])
 AC_LANG_POP([C++])
 CPPFLAGS="$ax_save_CPPFLAGS"
 LIBS="$ax_save_LIBS"
@@ -161,6 +312,12 @@ PKG_CHECK_MODULES([CRYPTO], [libcrypto >= 1.1], [],
 AC_CONFIG_FILES([Makefile src/Makefile])
 AC_OUTPUT
 
+AS_IF([test "x$tapir_use_bundled" = "xyes"],
+  [tapir_la_info="bundled fork (${with_libarchive})"],
+  [AS_IF([test "x$with_libarchive" = "xauto" || test "x$with_libarchive" = "xsystem"],
+     [tapir_la_info="system"],
+     [tapir_la_info="${with_libarchive}"])])
+
 AC_MSG_NOTICE([
 
   $PACKAGE_NAME $PACKAGE_VERSION configured:
@@ -168,6 +325,7 @@ AC_MSG_NOTICE([
     C++ standard ...... $ax_std
     std::expected ..... $have_std_expected
     std::print ........ $have_std_print
+    libarchive ........ $tapir_la_info
     libarchive libs ... $LIBARCHIVE_LIBS
     libfuse ........... fuse3  ($FUSE_LIBS)
     nlohmann/json ..... ${JSON_CFLAGS:-(default include path)}
