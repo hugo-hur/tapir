@@ -46,6 +46,7 @@ namespace tapir
         int64_t block_number = -1;      // header's physical block within its tape file; -1 = unknown
         int64_t block_offset = -1;      // header's byte offset within that block; -1 = unknown (slow read)
         mode_t mode = 0;                // permission bits from tar header; 0 = not recorded (use kFileMode default)
+        std::string tape_name;          // actual tar member name if different from logical path (set on rename)
         std::shared_ptr<Staged> staged; // non-null while data lives only in a temp file
         bool staged_flushed = false;    // staged data is on the (still-open) tape file; release at sync
         WriteHandle *writing = nullptr; // non-owning observer while open for writing
@@ -90,6 +91,12 @@ namespace tapir
         bool make_dir(const std::string &path);
         bool remove_dir(const std::string &path);
         bool unlink_file(const std::string &path); // index-only delete
+
+        // Move/rename a node (file or directory). Pure index operation — no tape I/O.
+        // Preserves tape_name so renamed files remain readable by position (or by their
+        // original member name as a fallback when block_offset is unknown).
+        // Returns 0 on success or an errno on failure (ENOENT, ENOTEMPTY, EISDIR, ENOTDIR).
+        int rename_node(const std::string &from, const std::string &to);
 
         bool dirty() const { return dirty_; }
         void mark_dirty() { dirty_ = true; }

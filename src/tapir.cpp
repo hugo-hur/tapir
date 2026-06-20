@@ -27,6 +27,7 @@
 #include "writer.hpp"
 
 #include <cerrno>
+#include <cinttypes>
 #include <clocale>
 #include <cstdio>
 #include <cstdlib>
@@ -295,9 +296,35 @@ namespace
             {
                 Fd nf;
                 uint64_t nsz;
+                // Use the original tape member name for fallback name-scan (set on rename
+                // when block_offset was unknown); positional reads ignore it entirely.
+                const std::string &tape_member = n->tape_name.empty()
+                    ? std::string(member_name(path)) : n->tape_name;
+                int64_t found_block = -1, found_offset = -1;
                 if (!g->tape->read_member(n->data_tape_file, n->block_factor, n->block_number,
-                                          n->block_offset, member_name(path), nf, nsz))
+                                          n->block_offset, tape_member, nf, nsz,
+                                          &found_block, &found_offset))
                     return -EIO;
+                // Fallback full-scan ran: update position (corrects any stale recorded value).
+                if (found_block >= 0)
+                {
+                    if (n->block_number >= 0 &&
+                        (n->block_number != found_block || n->block_offset != found_offset))
+                        std::fprintf(stderr,
+                                     "tapir: corrected stale block position for '%s': "
+                                     "was block=%" PRId64 " offset=%" PRId64
+                                     ", now block=%" PRId64 " offset=%" PRId64 "\n",
+                                     path, n->block_number, n->block_offset,
+                                     found_block, found_offset);
+                    else
+                        std::fprintf(stderr,
+                                     "tapir: cached block position for '%s': "
+                                     "block=%" PRId64 " offset=%" PRId64 "\n",
+                                     path, found_block, found_offset);
+                    n->block_number = found_block;
+                    n->block_offset = found_offset;
+                    g->index.mark_dirty();
+                }
                 it = g->cache.emplace(path, CacheEntry{std::move(nf), nsz}).first;
             }
             fd = it->second.fd.get();
@@ -344,6 +371,21 @@ namespace
         }
         g->writers.erase(it);
         return 0;
+    }
+
+    int t_rename(const char *from, const char *to, unsigned int flags)
+    {
+        if (flags) return -EINVAL; // RENAME_EXCHANGE and friends not supported
+        std::lock_guard<std::mutex> lk(g->mtx);
+        // Evict cache for the old path and any children (directory rename).
+        const std::string from_str(from);
+        const std::string prefix = from_str + "/";
+        for (auto it = g->cache.begin(); it != g->cache.end(); )
+            it = (it->first == from_str || it->first.starts_with(prefix))
+                 ? g->cache.erase(it) : std::next(it);
+        g->cache.erase(to);
+        const int rc = g->index.rename_node(from, to);
+        return rc ? -rc : 0;
     }
 
     int t_unlink(const char *path)
@@ -425,6 +467,7 @@ namespace
         .mkdir    = t_mkdir,
         .unlink   = t_unlink,
         .rmdir    = t_rmdir,
+        .rename   = t_rename,
         .chmod    = t_chmod,
         .truncate = t_truncate,
         .open     = t_open,

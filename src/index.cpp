@@ -242,6 +242,7 @@ namespace tapir
                 n->block_number = f.value("tape_block", -1LL);
                 n->block_offset = f.value("tape_block_offset", -1LL);
                 n->mode = static_cast<mode_t>(f.value("perm", 0));
+                n->tape_name = f.value("tape_member", std::string{});
                 if (auto it = f.find("hashes"); it != f.end() && it->is_object())
                     if (auto hit = it->find("sha256sum"); hit != it->end())
                         n->sha256 = hit->get<std::string>();
@@ -359,6 +360,8 @@ namespace tapir
                     f["tape_block"] = node->block_number;
                 if (node->block_offset >= 0)
                     f["tape_block_offset"] = node->block_offset;
+                if (!node->tape_name.empty())
+                    f["tape_member"] = node->tape_name;
                 if (node->mode != 0)
                     f["perm"] = node->mode;
                 f["verified_with"] = nullptr;
@@ -379,6 +382,75 @@ namespace tapir
             }
         }
         return out.dump();
+    }
+
+    // ── rename ────────────────────────────────────────────────────────────────────
+    // Recursively set tape_name for files in a subtree about to be moved.
+    // old_path is the pre-move member path (no leading '/').
+    static void fix_tape_names(Node *n, const std::string &old_path)
+    {
+        for (auto &[name, child] : n->children)
+        {
+            const std::string child_old = old_path + "/" + name;
+            if (child->is_dir)
+                fix_tape_names(child.get(), child_old);
+            else if (child->tape_name.empty())
+                child->tape_name = child_old;
+        }
+    }
+
+    int Index::rename_node(const std::string &from, const std::string &to)
+    {
+        if (from == to)
+            return 0;
+
+        auto from_parts = split(from);
+        if (from_parts.empty())
+            return EINVAL;
+        Node *from_parent = parent_of(from_parts);
+        if (!from_parent)
+            return ENOENT;
+        auto from_it = from_parent->children.find(from_parts.back());
+        if (from_it == from_parent->children.end())
+            return ENOENT;
+        Node *src = from_it->second.get();
+
+        auto to_parts = split(to);
+        if (to_parts.empty())
+            return EINVAL;
+        Node *to_parent = parent_of(to_parts);
+        if (!to_parent || !to_parent->is_dir)
+            return ENOENT;
+
+        // Handle existing destination
+        auto to_it = to_parent->children.find(to_parts.back());
+        if (to_it != to_parent->children.end())
+        {
+            Node *dst = to_it->second.get();
+            if (dst->is_dir && !src->is_dir)  return EISDIR;
+            if (!dst->is_dir && src->is_dir)   return ENOTDIR;
+            if (dst->is_dir && !dst->children.empty()) return ENOTEMPTY;
+            to_parent->children.erase(to_it);
+        }
+
+        // Preserve the original tar member name before the logical path changes.
+        // Member names on tape have no leading '/'; strip it from the FUSE path.
+        const std::string old_member = (!from.empty() && from[0] == '/') ? from.substr(1) : from;
+        if (!src->is_dir)
+        {
+            if (src->tape_name.empty())
+                src->tape_name = old_member;
+        }
+        else
+        {
+            fix_tape_names(src, old_member);
+        }
+
+        src->name = to_parts.back();
+        to_parent->children.emplace(to_parts.back(), std::move(from_it->second));
+        from_parent->children.erase(from_parts.back());
+        dirty_ = true;
+        return 0;
     }
 
 } // namespace tapir
