@@ -294,7 +294,7 @@ namespace tapir
                 if (fd.valid())
                 {
                     ArchiveReadPtr a = tar_open_at_block_offset(fd.get(), bsize, block_offset);
-                    if (a && tar_extract_first_member(a.get(), out_fd, out_size))
+                    if (a && tar_extract(a.get(), nullptr, out_fd, out_size))
                     {
                         current_file_ = -1; // mid-file after extract
                         return true;
@@ -318,7 +318,7 @@ namespace tapir
         if (!a)
             return false;
         la_int64_t found_pos = -1;
-        const bool ok = tar_extract_member(a.get(), member, out_fd, out_size, &found_pos);
+        const bool ok = tar_extract(a.get(), &member, out_fd, out_size, &found_pos);
         if (ok && found_pos >= 0 && out_block && out_offset)
         {
             *out_block  = found_pos / bsize;

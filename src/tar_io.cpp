@@ -132,11 +132,9 @@ namespace tapir
         return false;
     }
 
-    // Shared extraction body: finds the first header matching *member (or any header
-    // when member is nullptr), writes data to an anonymous temp file, returns it.
-    static bool extract_impl(struct archive *a, const std::string *member,
-                             Fd &out_fd, uint64_t &out_size,
-                             la_int64_t *out_header_pos)
+    bool tar_extract(struct archive *a, const std::string *member,
+                     Fd &out_fd, uint64_t &out_size,
+                     la_int64_t *out_header_pos)
     {
         struct archive_entry *e;
         while (archive_read_next_header(a, &e) == ARCHIVE_OK)
@@ -168,17 +166,6 @@ namespace tapir
             return true;
         }
         return false;
-    }
-
-    bool tar_extract_member(struct archive *a, const std::string &member, Fd &out_fd, uint64_t &out_size,
-                            la_int64_t *out_header_pos)
-    {
-        return extract_impl(a, &member, out_fd, out_size, out_header_pos);
-    }
-
-    bool tar_extract_first_member(struct archive *a, Fd &out_fd, uint64_t &out_size)
-    {
-        return extract_impl(a, nullptr, out_fd, out_size, nullptr);
     }
 
     bool tar_write_file(struct archive *a, const OutFile &f,

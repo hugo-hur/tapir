@@ -17,7 +17,7 @@
 //     the recommended fix) extracts the member correctly.
 //
 // This test always runs (no TAPIR_TEST_DEVICE needed). It exercises the real
-// tar I/O primitives (tar_write_file / tar_extract_member) and pins down the
+// tar I/O primitives (tar_write_file / tar_extract) and pins down the
 // invariant the read-side fix must satisfy.
 
 #include "test_tape_common.hpp"   // check(), gen(), make_src(), Fd, finish()
@@ -96,6 +96,7 @@ int main()
     std::printf("  target header @byte %lld -> block %lld (byte %lld), within-block offset %lld\n",
                 (long long)P, (long long)(P / B), (long long)block_start, (long long)within_block);
     check(within_block != 0, "target header is NOT block-aligned (scenario is meaningful)");
+    const std::string tgt_name = "target";
 
     // 3) BUG path: start at the block boundary (Tape::seek_to today) -> must fail,
     //    because the block begins inside the previous member's data.
@@ -104,7 +105,7 @@ int main()
         ::lseek(rfd, block_start, SEEK_SET);
         struct archive *a = open_read_fd(rfd, B);
         Fd out; uint64_t sz = 0;
-        bool ok = a && tar_extract_member(a, "target", out, sz);
+        bool ok = a && tar_extract(a, &tgt_name, out, sz);
         if (a) archive_read_free(a);
         if (rfd >= 0) ::close(rfd);
         check(!ok, "extract from BLOCK BOUNDARY fails (header preceded by prior member's bytes)");
@@ -119,7 +120,7 @@ int main()
         ::lseek(rfd, block_start, SEEK_SET);   // NOT the header — the block start
         ArchiveReadPtr a = tar_open_at_block_offset(rfd, B, within_block);
         Fd out; uint64_t sz = 0;
-        bool ok = a && tar_extract_member(a.get(), "target", out, sz);
+        bool ok = a && tar_extract(a.get(), &tgt_name, out, sz);
         std::vector<std::byte> got;
         if (ok && out.valid() && sz == tgt.size()) {
             got.resize(sz);

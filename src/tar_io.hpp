@@ -37,15 +37,14 @@ namespace tapir
     bool tar_read_member(struct archive *a, const std::string &member, std::string &out);
 
     // Extract a member into a fresh anonymous temp file; yields its Fd + size.
+    // When member is non-null, scans for the first entry whose name matches.
+    // When member is nullptr, extracts the first header unconditionally (fast-path
+    // use after tar_open_at_block_offset, where the seek already landed on the header).
     // out_header_pos, if non-null, receives archive_read_header_position() of the
-    // matched member (byte offset within the stream; -1 if unavailable).
-    bool tar_extract_member(struct archive *a, const std::string &member, Fd &out_fd, uint64_t &out_size,
-                            la_int64_t *out_header_pos = nullptr);
-
-    // Extract the first member from an already-positioned archive without a name
-    // check. Use on the fast path after tar_open_at_block_offset, where the seek
-    // already landed on the exact header — the name is irrelevant.
-    bool tar_extract_first_member(struct archive *a, Fd &out_fd, uint64_t &out_size);
+    // matched entry (byte offset within the stream; -1 if unavailable).
+    bool tar_extract(struct archive *a, const std::string *member,
+                     Fd &out_fd, uint64_t &out_size,
+                     la_int64_t *out_header_pos = nullptr);
 
     // Open a read-archive on `fd` whose current position is the START of the
     // physical block holding a member's tar header, where the header begins
