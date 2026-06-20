@@ -97,18 +97,12 @@ namespace tapir
                                  bool is_tapir_index)> &on_header = {});
 
     // Copy every member from read-archive `in` to write-archive `out` (normalising
-    // leading "./" or "/"), computing SHA-256 and invoking cb(name, sha256, size, mtime, mode)
-    // per regular file. For importing a tar from disk onto the tape.
-    bool tar_copy_members(
-        struct archive *in, struct archive *out,
-        const std::function<void(const std::string &name, const std::string &sha256,
-                                 uint64_t size, time_t mtime, mode_t mode)> &cb);
-
-    // Like tar_copy_members but also reports each member's write-side header position
-    // via archive_write_header_position() (tapir libarchive fork).
+    // leading "./" or "/"), computing SHA-256 and invoking cb per regular file. For
+    // importing a tar from disk onto the tape. Also reports each member's write-side
+    // header position via archive_write_header_position() (tapir libarchive fork):
     // `block` = pos / bsize, `offset` = pos % bsize — the same pair that
-    // tar_open_at_block_offset needs to seek straight to the member on tape.
-    // Requires HAVE_ARCHIVE_WRITE_HEADER_POSITION (--with-libarchive=bundled).
+    // tar_open_at_block_offset needs to seek straight to the member on tape. Without
+    // the fork (stock libarchive) block/offset are reported as -1.
     bool tar_copy_members_with_blocks(
         struct archive *in, struct archive *out, int64_t bsize,
         const std::function<void(const std::string &name, int64_t block, int64_t offset,

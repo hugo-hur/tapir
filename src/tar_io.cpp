@@ -266,9 +266,10 @@ namespace tapir
         return r == ARCHIVE_EOF;
     }
 
-    bool tar_copy_members(
-        struct archive *in, struct archive *out,
-        const std::function<void(const std::string &, const std::string &, uint64_t, time_t, mode_t)> &cb)
+    bool tar_copy_members_with_blocks(
+        struct archive *in, struct archive *out, int64_t bsize,
+        const std::function<void(const std::string &, int64_t, int64_t,
+                                 const std::string &, uint64_t, time_t, mode_t)> &cb)
     {
         struct archive_entry *e;
         int r;
@@ -280,46 +281,15 @@ namespace tapir
             archive_entry_set_pathname_utf8(e, name.c_str()); // normalise on-tape name too
             if (archive_write_header(out, e) != ARCHIVE_OK)
                 return false;
-            const bool is_file = archive_entry_filetype(e) == AE_IFREG && archive_entry_hardlink(e) == nullptr;
-            security::Sha256 sha;
-            uint64_t total = 0;
-            if (!drain_member(in, out, sha, total))
-                return false;
-            if (is_file)
-                cb(name, sha.hex(), total, entry_mtime, entry_mode);
-        }
-        return r == ARCHIVE_EOF;
-    }
-
-    bool tar_copy_members_with_blocks(
-        struct archive *in, struct archive *out, int64_t bsize,
-        const std::function<void(const std::string &, int64_t, int64_t,
-                                 const std::string &, uint64_t, time_t, mode_t)> &cb)
-    {
-#ifndef HAVE_ARCHIVE_WRITE_HEADER_POSITION
-        (void)bsize;
-        // Fall back to tar_copy_members with a stub that passes block=-1, offset=-1.
-        return tar_copy_members(in, out,
-            [&](const std::string &name, const std::string &sha, uint64_t size, time_t mt, mode_t mo)
-            { cb(name, -1, -1, sha, size, mt, mo); });
-#else
-        struct archive_entry *e;
-        int r;
-        while ((r = archive_read_next_header(in, &e)) == ARCHIVE_OK)
-        {
-            const std::string name = normalize(epath(e));
-            const time_t entry_mtime = archive_entry_mtime(e);
-            const mode_t entry_mode = archive_entry_perm(e);
-            archive_entry_set_pathname_utf8(e, name.c_str());
-            if (archive_write_header(out, e) != ARCHIVE_OK)
-                return false;
-            // Capture the byte offset of this header in the write stream immediately
-            // after archive_write_header() — this is what archive_write_header_position()
-            // was added to the tapir fork to provide.
-            const la_int64_t pos = archive_write_header_position(out);
+            // Byte offset of this header in the write stream, captured immediately after
+            // archive_write_header(). archive_write_header_position() is the tapir fork's
+            // addition; without it (stock libarchive) block/offset stay -1.
             int64_t block = -1, offset = -1;
-            split_block_pos(pos, bsize, block, offset);
-
+#ifdef HAVE_ARCHIVE_WRITE_HEADER_POSITION
+            split_block_pos(archive_write_header_position(out), bsize, block, offset);
+#else
+            (void)bsize;
+#endif
             const bool is_file = archive_entry_filetype(e) == AE_IFREG && archive_entry_hardlink(e) == nullptr;
             security::Sha256 sha;
             uint64_t total = 0;
@@ -329,7 +299,6 @@ namespace tapir
                 cb(name, block, offset, sha.hex(), total, entry_mtime, entry_mode);
         }
         return r == ARCHIVE_EOF;
-#endif
     }
 
     bool tar_for_each_member_with_blocks(
