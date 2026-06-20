@@ -60,9 +60,11 @@ tt_cleanup(){
   [ -n "$TAPIR_PID" ] && kill -0 "$TAPIR_PID" 2>/dev/null && kill -9 "$TAPIR_PID" 2>/dev/null
   [ -n "${WORK:-}" ] && rm -rf "$WORK"
 }
+declare -A MT   # expected mtime (epoch seconds) per member, for timestamp checks
 shaof(){ sha256sum "$1" 2>/dev/null | awk '{print $1}'; }
 mkf(){ head -c "$2" /dev/urandom > "$SRC/$1"; SHA[$1]=$(shaof "$SRC/$1"); }              # name size
 add(){ mkdir -p "$SRC/$1"; head -c "$3" /dev/urandom > "$SRC/$1/$2"; SHA[$2]=$(shaof "$SRC/$1/$2"); }  # dir name size
+addt(){ add "$1" "$2" "$3"; touch -d "@$4" "$SRC/$1/$2"; MT[$2]="$4"; }                  # dir name size mtime-epoch
 filenum(){ mt -f "$DEV" status | sed -n 's/.*File number=\([0-9]*\).*/\1/p'; }
 
 # ── FUSE mount plumbing ───────────────────────────────────────────────────────

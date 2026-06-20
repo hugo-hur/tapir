@@ -24,7 +24,8 @@ mktapir_LDADD    = libtapir.a $(LIBARCHIVE_LIBS) $(CRYPTO_LIBS)
 # Unit tests (make check)
 check_PROGRAMS   = test_security test_index test_cli test_block_offset test_tar_io test_seek_plan test_tape_seq test_tape_seek
 TESTS            = test_security test_index test_cli test_block_offset test_tar_io test_seek_plan test_tape_seq test_tape_seek \
-                   test_tape_mount.sh test_tape_import.sh test_tape_import_fix.sh test_tape_upgrade.sh
+                   test_tape_mount.sh test_tape_import.sh test_tape_append.sh \
+                   test_tape_import_fix.sh test_tape_upgrade.sh
 
 # The shell tests source test_tape_lib.sh and drive the binaries by path; tell
 # them where the binaries (TAPIR_BIN_DIR) and the lib (TAPIR_TEST_SRCDIR) live so
@@ -34,8 +35,8 @@ TESTS            = test_security test_index test_cli test_block_offset test_tar_
 # (one drive). The CLI parser is covered device-free by test_cli (C++) instead.
 AM_TESTS_ENVIRONMENT = TAPIR_BIN_DIR='$(abs_builddir)'; export TAPIR_BIN_DIR; \
                        TAPIR_TEST_SRCDIR='$(abs_srcdir)'; export TAPIR_TEST_SRCDIR;
-EXTRA_DIST           = test_tape_lib.sh test_tape_mount.sh \
-                       test_tape_import.sh test_tape_import_fix.sh test_tape_upgrade.sh
+EXTRA_DIST           = test_tape_lib.sh test_tape_mount.sh test_tape_import.sh \
+                       test_tape_append.sh test_tape_import_fix.sh test_tape_upgrade.sh
 
 test_security_SOURCES  = test_security.cpp
 test_security_CPPFLAGS = $(CRYPTO_CFLAGS)

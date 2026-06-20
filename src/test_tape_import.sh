@@ -25,11 +25,13 @@ GNULONG="gnu_long_name_well_past_the_ustar_one_hundred_character_limit_to_force_
 say "=== test_tape_import on $DEV (manifest bf=$BF) ==="
 
 # ── five foreign tars, five formats, five blocking factors ────────────────────
-add d_v7     v7_a    1000;     add d_v7     v7_b    40000
-add d_ustar  ustar_a 2000;     add d_ustar  ustar_b 131072
-add d_gnu    "$GNULONG" 70000; add d_gnu    gnu_b   300000
-add d_oldgnu oldgnu_a 5000;    add d_oldgnu oldgnu_b 250000
-add d_pax    pax_a   123;      add d_pax    pax_b   777777
+# Distinct per-file mtimes (whole seconds: every tar format stores integer mtime)
+# so the import → index → FUSE getattr path can be checked for preservation.
+addt d_v7     v7_a    1000     1600000001; addt d_v7     v7_b    40000  1600000002
+addt d_ustar  ustar_a 2000     1600000003; addt d_ustar  ustar_b 131072 1600000004
+addt d_gnu    "$GNULONG" 70000 1600000005; addt d_gnu    gnu_b   300000 1600000006
+addt d_oldgnu oldgnu_a 5000    1600000007; addt d_oldgnu oldgnu_b 250000 1600000008
+addt d_pax    pax_a   123      1600000009; addt d_pax    pax_b   777777 1600000010
 mt -f "$DEV" setblk 0 >/dev/null 2>&1; mt -f "$DEV" rewind
 ( cd "$SRC/d_v7"     && tar -b 64  -H v7     -cf "$DEV" v7_a v7_b );          r0=$?   # f0 bf=64
 ( cd "$SRC/d_ustar"  && tar -b 128 -H ustar  -cf "$DEV" ustar_a ustar_b );   r1=$?   # f1 bf=128
@@ -46,13 +48,16 @@ if grep -q '(factor 64)' "$WORK/import.log" && grep -q '(factor 512)' "$WORK/imp
 then ok "mixed_bf_detected" "auto-detected factors 64,512,20"
 else bad "mixed_bf_detected" "mixed factors not in import log"; fi
 
-# ── mount + verify every member, then tfsck ───────────────────────────────────
+# ── mount + verify every member's content AND mtime, then tfsck ───────────────
 if mnt_up; then
-    v=0
+    v=0; m=0
     for f in v7_a v7_b ustar_a ustar_b "$GNULONG" gnu_b oldgnu_a oldgnu_b pax_a pax_b; do
-        [ "$(shaof "$MNT/$f")" = "${SHA[$f]}" ] || { v=1; say "  import mismatch $f"; }
+        [ "$(shaof "$MNT/$f")" = "${SHA[$f]}" ] || { v=1; say "  content mismatch $f"; }
+        got=$(stat -c %Y "$MNT/$f" 2>/dev/null)
+        [ "$got" = "${MT[$f]}" ] || { m=1; say "  mtime mismatch $f got=$got want=${MT[$f]}"; }
     done
     res $v "import_verify_allformats" "10 members / 5 formats"
+    res $m "import_mtime_preserved" "mtime across v7/ustar/gnu/oldgnu/pax"
     mnt_down
 else bad "import_verify_allformats" "mount failed"; fi
 
