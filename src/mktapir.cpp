@@ -116,23 +116,29 @@ static int do_import(const std::string &dev, const std::vector<int> &files, int 
         }
         int detected = 0;
         bool saw_manifest = false;
-        std::vector<std::tuple<std::string, std::string, uint64_t, time_t, mode_t>> members;
-        const bool ok = tape.scan_archive_detect(
+        struct MemberRec { std::string name, sha; uint64_t size; time_t mtime; mode_t mode;
+                           int64_t block, offset; };
+        std::vector<MemberRec> members;
+        const bool ok = tape.scan_archive_detect_with_blocks(
             f, detected,
-            [&](const std::string &name, const std::string &sha, uint64_t size, time_t mtime, mode_t mode)
+            [&](const std::string &name, int64_t block, int64_t offset,
+                const std::string &sha, uint64_t size, time_t mtime, mode_t mode)
             {
                 if (name == "manifest.json")
                     return; // always skip from data indexing (tapir or not)
-                members.emplace_back(name, sha, size, mtime, mode);
+                members.push_back({name, sha, size, mtime, mode, block, offset});
                 if (verbose)
-                    std::fprintf(stderr, "      %s  %llu\n", sha.c_str(), static_cast<unsigned long long>(size));
+                    std::fprintf(stderr, "      %s  %llu  block %lld+%lld\n",
+                                 sha.c_str(), static_cast<unsigned long long>(size),
+                                 static_cast<long long>(block), static_cast<long long>(offset));
             },
-            [&](const std::string &name, bool is_tapir_index)
+            [&](const std::string &name, int64_t block, bool is_tapir_index)
             {
                 if (is_tapir_index)
                     saw_manifest = true;
                 else if (verbose)
-                    std::fprintf(stderr, "    %s\n", name.c_str());
+                    std::fprintf(stderr, "    %-55s  block %lld\n",
+                                 name.c_str(), static_cast<long long>(block));
             });
         if (saw_manifest)
         {

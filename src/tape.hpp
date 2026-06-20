@@ -125,6 +125,17 @@ namespace tapir
                                                           uint64_t, time_t, mode_t)> &cb,
                                  const std::function<void(const std::string &, bool is_tapir_index)> &on_header = {});
 
+        // Like scan_archive_detect but also reports each member's header position as
+        // a (block, offset) pair (same semantics as scan_archive_with_blocks). Allows
+        // mktapir import to record block offsets in the same pass as the SHA scan.
+        bool scan_archive_detect_with_blocks(
+            int tape_file, int &detected_block_bytes,
+            const std::function<void(const std::string &name, int64_t block, int64_t offset,
+                                     const std::string &sha256, uint64_t size,
+                                     time_t mtime, mode_t mode)> &cb,
+            const std::function<void(const std::string &name, int64_t block,
+                                     bool is_tapir_index)> &on_header = {});
+
         // Append a new data archive at EOD (written by `write_data`, or skipped if it
         // is empty/null), then write the manifest as the next tape file.
         // `make_manifest(data_tape_file)` produces the manifest JSON, so the new

@@ -401,6 +401,56 @@ namespace tapir
         return ok;
     }
 
+    bool Tape::scan_archive_detect_with_blocks(
+        int tape_file, int &detected,
+        const std::function<void(const std::string &, int64_t, int64_t,
+                                 const std::string &, uint64_t, time_t, mode_t)> &cb,
+        const std::function<void(const std::string &, int64_t, bool)> &on_header)
+    {
+        detected = 0;
+
+        // Pass 1: read one physical block to learn its size.
+        if (!position_data(tape_file))
+            return false;
+        {
+            Fd fd(::open(dev_.c_str(), O_RDONLY));
+            if (!fd.valid())
+                return false;
+            std::vector<char> buf(1u << 22); // 4 MiB: larger than any expected tape block
+            const ssize_t n = ::read(fd.get(), buf.data(), buf.size());
+            if (n <= 0)
+            {
+                if (verbose_)
+                    std::fprintf(stderr, "  tape: file %d is empty or unreadable\n", tape_file);
+                return false;
+            }
+            detected = static_cast<int>(n);
+        }
+        // Raw read left us mid-file; invalidate so position_data does a proper reposition.
+        current_file_ = -1;
+        if (verbose_)
+            std::fprintf(stderr, "  tape: file %d physical block size = %d bytes\n", tape_file, detected);
+
+        // Pass 2: rewind and scan with block position reporting using the proven block size.
+        if (!position_data(tape_file))
+            return false;
+        Fd fd;
+        ArchiveReadPtr a = open_read(dev_, detected, fd);
+        if (!a)
+        {
+            if (verbose_)
+                std::fprintf(stderr, "  tape: file %d: could not open for reading\n", tape_file);
+            return false;
+        }
+        const bool ok = tar_for_each_member_with_blocks(
+            a.get(), static_cast<int64_t>(detected), cb, on_header);
+        if (!ok && verbose_)
+            std::fprintf(stderr, "  tape: file %d: libarchive: %s\n",
+                         tape_file, archive_error_string(a.get()));
+        file_number(); // capture post-read position
+        return ok;
+    }
+
     // ── writes ────────────────────────────────────────────────────────────────────
     bool Tape::write_tape_file(int block_factor, const std::function<bool(struct archive *)> &writer)
     {
