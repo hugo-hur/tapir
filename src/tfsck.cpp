@@ -28,6 +28,7 @@
 #include "config.h"
 #endif
 
+#include "cli.hpp"
 #include "index.hpp"
 #include "tape.hpp"
 
@@ -483,145 +484,49 @@ int main(int argc, char **argv)
         return 2;
     }
 
-    // Detect mode from first option-like argument.
     const std::string first = argv[1];
+
+    auto parse = [&](int start, TapeOpts &opts) -> bool {
+        if (!parse_tape_opts(argc, argv, start, opts, argv[0]) || opts.device.empty())
+        {
+            usage(argv[0]);
+            return false;
+        }
+        return true;
+    };
 
     if (first == "--list-generations")
     {
-        std::string device;
-        int mbf = 512;
-        for (int i = 2; i < argc; ++i)
-        {
-            const std::string a = argv[i];
-            if ((a == "-m" || a == "--manifest-block-factor") && i + 1 < argc)
-                mbf = std::atoi(argv[++i]);
-            else if (device.empty() && !a.empty() && a[0] != '-')
-                device = a;
-            else if (!a.empty() && a[0] == '-')
-            {
-                std::fprintf(stderr, "tfsck: unknown option: %s\n", a.c_str());
-                usage(argv[0]);
-                return 2;
-            }
-        }
-        if (device.empty())
-        {
-            usage(argv[0]);
-            return 2;
-        }
-        return do_list_generations(device, mbf);
+        TapeOpts opts;
+        if (!parse(2, opts)) return 2;
+        return do_list_generations(opts.device, opts.mbf);
     }
 
     if (first == "--upgrade-manifest")
     {
-        std::string device;
-        int mbf = 512;
-        for (int i = 2; i < argc; ++i)
-        {
-            const std::string a = argv[i];
-            if ((a == "-m" || a == "--manifest-block-factor") && i + 1 < argc)
-                mbf = std::atoi(argv[++i]);
-            else if (device.empty() && !a.empty() && a[0] != '-')
-                device = a;
-            else if (!a.empty() && a[0] == '-')
-            {
-                std::fprintf(stderr, "tfsck: unknown option: %s\n", a.c_str());
-                usage(argv[0]);
-                return 2;
-            }
-        }
-        if (device.empty())
-        {
-            usage(argv[0]);
-            return 2;
-        }
-        return do_upgrade_manifest(device, mbf);
+        TapeOpts opts;
+        if (!parse(2, opts)) return 2;
+        return do_upgrade_manifest(opts.device, opts.mbf);
     }
 
     if (first == "--rollback")
     {
-        std::string device;
-        int mbf = 512;
-        for (int i = 2; i < argc; ++i)
-        {
-            const std::string a = argv[i];
-            if ((a == "-m" || a == "--manifest-block-factor") && i + 1 < argc)
-                mbf = std::atoi(argv[++i]);
-            else if (device.empty() && !a.empty() && a[0] != '-')
-                device = a;
-            else if (!a.empty() && a[0] == '-')
-            {
-                std::fprintf(stderr, "tfsck: unknown option: %s\n", a.c_str());
-                usage(argv[0]);
-                return 2;
-            }
-        }
-        if (device.empty())
-        {
-            usage(argv[0]);
-            return 2;
-        }
-        return do_rollback_previous(device, mbf);
+        TapeOpts opts;
+        if (!parse(2, opts)) return 2;
+        return do_rollback_previous(opts.device, opts.mbf);
     }
 
     if (first == "--rollback-to")
     {
-        if (argc < 4)
-        {
-            usage(argv[0]);
-            return 2;
-        }
+        if (argc < 4) { usage(argv[0]); return 2; }
         const uint64_t target_gen = static_cast<uint64_t>(std::atoll(argv[2]));
-        std::string device;
-        int mbf = 512;
-        for (int i = 3; i < argc; ++i)
-        {
-            const std::string a = argv[i];
-            if ((a == "-m" || a == "--manifest-block-factor") && i + 1 < argc)
-                mbf = std::atoi(argv[++i]);
-            else if (device.empty() && !a.empty() && a[0] != '-')
-                device = a;
-            else if (!a.empty() && a[0] == '-')
-            {
-                std::fprintf(stderr, "tfsck: unknown option: %s\n", a.c_str());
-                usage(argv[0]);
-                return 2;
-            }
-        }
-        if (device.empty())
-        {
-            usage(argv[0]);
-            return 2;
-        }
-        return do_rollback(device, target_gen, mbf);
+        TapeOpts opts;
+        if (!parse(3, opts)) return 2;
+        return do_rollback(opts.device, target_gen, opts.mbf);
     }
 
-    // Default: verify mode. Device is first non-flag argument.
-    std::string device;
-    int bf = 512, mbf = 512;
-    bool verbose = false;
-    for (int i = 1; i < argc; ++i)
-    {
-        const std::string a = argv[i];
-        if (a == "-v" || a == "--verbose")
-            verbose = true;
-        else if ((a == "-b" || a == "--block-factor") && i + 1 < argc)
-            bf = std::atoi(argv[++i]);
-        else if ((a == "-m" || a == "--manifest-block-factor") && i + 1 < argc)
-            mbf = std::atoi(argv[++i]);
-        else if (device.empty() && !a.empty() && a[0] != '-')
-            device = a;
-        else if (!a.empty() && a[0] == '-')
-        {
-            std::fprintf(stderr, "tfsck: unknown option: %s\n", a.c_str());
-            usage(argv[0]);
-            return 2;
-        }
-    }
-    if (device.empty())
-    {
-        usage(argv[0]);
-        return 2;
-    }
-    return do_verify(device, bf, mbf, verbose);
+    // Default: verify mode. Device is the first non-flag argument.
+    TapeOpts opts;
+    if (!parse(1, opts)) return 2;
+    return do_verify(opts.device, opts.bf, opts.mbf, opts.verbose);
 }

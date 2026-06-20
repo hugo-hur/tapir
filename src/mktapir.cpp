@@ -20,6 +20,7 @@
 #include "config.h"
 #endif
 
+#include "cli.hpp"
 #include "index.hpp"
 #include "tape.hpp"
 #include "tar_io.hpp"
@@ -446,89 +447,70 @@ int main(int argc, char **argv)
     // Detected when the first argument looks like a device path.
     if (argc >= 2 && std::string(argv[1]).rfind("/dev/", 0) == 0)
     {
-        const std::string dev = argv[1];
-        int mbf = 512;
+        TapeOpts opts;
+        opts.device = argv[1];
         bool force = false;
-        for (int i = 2; i < argc; ++i)
+        auto extra = [&](const char *a, int &, int, char **) -> bool {
+            if (std::strcmp(a, "--force") == 0) { force = true; return true; }
+            return false;
+        };
+        if (!parse_tape_opts(argc, argv, 2, opts, argv[0], extra))
         {
-            const std::string a = argv[i];
-            if (a == "--force")
-                force = true;
-            else if ((a == "-m" || a == "--manifest-block-factor") && i + 1 < argc)
-                mbf = std::atoi(argv[++i]);
+            usage(argv[0]);
+            return 2;
         }
-        return do_init(dev, mbf, force);
+        return do_init(opts.device, opts.mbf, force);
     }
 
     if (argc >= 3 && std::strcmp(argv[1], "import") == 0)
     {
-        const std::string dev = argv[2];
-        std::vector<int> files; // empty → all data tape files
-        int bf = 0 /* 0 = auto-detect */, mbf = 512;
-        bool verbose = false;
-        for (int i = 3; i < argc; ++i)
-        {
-            const std::string a = argv[i];
-            if (a == "-v" || a == "--verbose")
-                verbose = true;
-            else if ((a == "-f" || a == "--tape-file") && i + 1 < argc)
+        TapeOpts opts;
+        opts.device = argv[2];
+        opts.bf = 0; // 0 = auto-detect
+        std::vector<int> files;
+        auto extra = [&](const char *a, int &i, int argc, char **argv) -> bool {
+            if ((std::strcmp(a, "-f") == 0 || std::strcmp(a, "--tape-file") == 0) && i + 1 < argc)
             {
-                // comma-separated list, e.g. -f 0,2,5 (repeatable)
-                const std::string v = argv[++i];
-                for (std::size_t p = 0; p < v.size();)
-                {
-                    const std::size_t c = v.find(',', p);
-                    const std::string tok = v.substr(p, c == std::string::npos ? c : c - p);
-                    if (!tok.empty())
-                        files.push_back(std::atoi(tok.c_str()));
-                    if (c == std::string::npos)
-                        break;
-                    p = c + 1;
-                }
+                for (int n : parse_int_list(argv[++i]))
+                    files.push_back(n);
+                return true;
             }
-            else if ((a == "-b" || a == "--block-factor") && i + 1 < argc)
-                bf = std::atoi(argv[++i]);
-            else if ((a == "-m" || a == "--manifest-block-factor") && i + 1 < argc)
-                mbf = std::atoi(argv[++i]);
-        }
-        if (dev.rfind("/dev/", 0) != 0)
+            return false;
+        };
+        if (!parse_tape_opts(argc, argv, 3, opts, argv[0], extra))
         {
             usage(argv[0]);
             return 2;
         }
-        return do_import(dev, files, bf, mbf, verbose);
+        if (opts.device.rfind("/dev/", 0) != 0) { usage(argv[0]); return 2; }
+        return do_import(opts.device, files, opts.bf, opts.mbf, opts.verbose);
     }
 
     if (argc >= 3 && std::strcmp(argv[1], "append") == 0)
     {
-        const std::string dev = argv[2];
+        TapeOpts opts;
+        opts.device = argv[2];
         std::string tarpath, filelist;
-        int bf = 512, mbf = 512;
-        bool verbose = false;
 
-        int i = 3;
         // Optional positional tarpath: present when the next arg is not a flag.
-        if (i < argc && argv[i][0] != '-')
-            tarpath = argv[i++];
+        int start = 3;
+        if (start < argc && argv[start][0] != '-')
+            tarpath = argv[start++];
 
-        for (; i < argc; ++i)
-        {
-            const std::string a = argv[i];
-            if (a == "-v" || a == "--verbose")
-                verbose = true;
-            else if ((a == "-T" || a == "--files-from") && i + 1 < argc)
+        auto extra = [&](const char *a, int &i, int argc, char **argv) -> bool {
+            if ((std::strcmp(a, "-T") == 0 || std::strcmp(a, "--files-from") == 0) && i + 1 < argc)
+            {
                 filelist = argv[++i];
-            else if ((a == "-b" || a == "--block-factor") && i + 1 < argc)
-                bf = std::atoi(argv[++i]);
-            else if ((a == "-m" || a == "--manifest-block-factor") && i + 1 < argc)
-                mbf = std::atoi(argv[++i]);
-        }
-
-        if (dev.rfind("/dev/", 0) != 0)
+                return true;
+            }
+            return false;
+        };
+        if (!parse_tape_opts(argc, argv, start, opts, argv[0], extra))
         {
             usage(argv[0]);
             return 2;
         }
+        if (opts.device.rfind("/dev/", 0) != 0) { usage(argv[0]); return 2; }
         if (!tarpath.empty() && !filelist.empty())
         {
             std::fprintf(stderr, "mktapir: a positional tar file and -T are mutually exclusive\n");
@@ -537,7 +519,7 @@ int main(int argc, char **argv)
         // No tar file and no -T <file>: default to reading paths from stdin.
         if (tarpath.empty() && filelist.empty())
             filelist = "-";
-        return do_append(dev, tarpath, filelist, bf, mbf, verbose);
+        return do_append(opts.device, tarpath, filelist, opts.bf, opts.mbf, opts.verbose);
     }
 
     usage(argv[0]);

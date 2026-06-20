@@ -1,7 +1,7 @@
 # Shared static library (like LTFS's libltfs) used by all the executables.
 noinst_LIBRARIES = libtapir.a
-libtapir_a_SOURCES = index.cpp tar_io.cpp tape.cpp security.cpp \
-                     index.hpp tar_io.hpp tape.hpp raii.hpp security.hpp
+libtapir_a_SOURCES = index.cpp tar_io.cpp tape.cpp security.cpp cli.cpp \
+                     index.hpp tar_io.hpp tape.hpp raii.hpp security.hpp cli.hpp
 libtapir_a_CPPFLAGS = $(LIBARCHIVE_CFLAGS) $(JSON_CFLAGS) $(CRYPTO_CFLAGS)
 
 bin_PROGRAMS = tapir tfsck mktapir
