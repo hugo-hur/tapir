@@ -100,18 +100,12 @@ namespace tapir
                          const std::string &member, Fd &out_fd, uint64_t &out_size,
                          int64_t *out_block = nullptr, int64_t *out_offset = nullptr);
 
-        // Stream every member of the data archive at `tape_file`, calling cb per file.
-        // on_header(name) fires immediately on header read; cb fires after data is hashed.
-        // `block_num` >= 0 uses MTSEEK (same semantics as read_member).
-        bool scan_archive(int tape_file, int block_factor, int64_t block_num,
-                          const std::function<void(const std::string &, const std::string &,
-                                                   uint64_t, time_t, mode_t)> &cb,
-                          const std::function<void(const std::string &, bool is_tapir_index)> &on_header = {});
-
-        // Like scan_archive but also reports each member's header position as a
-        // (block, offset) pair within the tape file (see tar_for_each_member_with_blocks).
-        // Used by tfsck to fill tape_block / tape_block_offset for archives indexed
-        // without them (imports, or pre-offset manifests).
+        // Stream every member of the data archive at `tape_file`, reporting each
+        // member's header position as a (block, offset) pair within the tape file
+        // (see tar_for_each_member_with_blocks). on_header fires immediately on header
+        // read; cb fires after the member's data is hashed. Used by tfsck to fill
+        // tape_block / tape_block_offset for archives indexed without them (imports,
+        // or pre-offset manifests).
         bool scan_archive_with_blocks(
             int tape_file, int block_factor,
             const std::function<void(const std::string &name, int64_t block, int64_t offset,
@@ -120,17 +114,11 @@ namespace tapir
             const std::function<void(const std::string &name, int64_t block,
                                      bool is_tapir_index)> &on_header = {});
 
-        // Like scan_archive, but auto-detects the data archive's physical block size
-        // (reported via `detected_block_bytes`) by reading with an oversized buffer —
-        // a single pass that both scans and discovers the block factor.
-        bool scan_archive_detect(int tape_file, int &detected_block_bytes,
-                                 const std::function<void(const std::string &, const std::string &,
-                                                          uint64_t, time_t, mode_t)> &cb,
-                                 const std::function<void(const std::string &, bool is_tapir_index)> &on_header = {});
-
-        // Like scan_archive_detect but also reports each member's header position as
-        // a (block, offset) pair (same semantics as scan_archive_with_blocks). Allows
-        // mktapir import to record block offsets in the same pass as the SHA scan.
+        // Like scan_archive_with_blocks, but auto-detects the data archive's physical
+        // block size (reported via `detected_block_bytes`) by reading with an oversized
+        // buffer — a single pass that scans, reports each member's (block, offset)
+        // position, and discovers the block factor. Allows mktapir import to record
+        // block offsets in the same pass as the SHA scan.
         bool scan_archive_detect_with_blocks(
             int tape_file, int &detected_block_bytes,
             const std::function<void(const std::string &name, int64_t block, int64_t offset,

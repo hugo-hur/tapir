@@ -75,23 +75,19 @@ namespace tapir
     // Returns true if the archive entry carries the tapir manifest PAX magic xattr.
     bool tar_entry_has_tapir_magic(struct archive_entry *e);
 
-    // Stream every regular member. on_header(name, is_tapir_index) is called
-    // immediately after the tar header is read (before any data is consumed);
-    // is_tapir_index is true when the member is "manifest.json" AND carries the
-    // tapir PAX magic xattr — i.e. this tape file is a tapir manifest, not data.
-    // cb(name, sha256, size, mtime, mode) is called after the member's data has
-    // been fully read and hashed. on_header may be empty.
-    bool tar_for_each_member(
-        struct archive *a,
-        const std::function<void(const std::string &name, const std::string &sha256,
-                                 uint64_t size, time_t mtime, mode_t mode)> &cb,
-        const std::function<void(const std::string &name, bool is_tapir_index)> &on_header = {});
-
-    // Like tar_for_each_member but also reports where each member's tar header sits:
-    // `block` is the 0-based physical block (header byte position / bsize) and
-    // `offset` is the header's byte offset within that block (position % bsize),
-    // both taken from archive_read_header_position(). The (block, offset) pair is
-    // what tar_open_at_block_offset needs to seek straight to a member.
+    // Stream every regular member of an opened read-archive, reporting where each
+    // member's tar header sits on tape. on_header(name, block, is_tapir_index) is
+    // called immediately after the tar header is read (before any data is consumed);
+    // is_tapir_index is true when the member is "manifest.json" AND carries the tapir
+    // PAX magic xattr — i.e. this tape file is a tapir manifest, not data. After the
+    // member's data is fully read and hashed, cb(name, block, offset, sha256, size,
+    // mtime, mode) fires. on_header may be empty.
+    //
+    // `block` is the 0-based physical block (header byte position / bsize) and `offset`
+    // is the header's byte offset within that block (position % bsize), both taken from
+    // archive_read_header_position(). The (block, offset) pair is exactly what
+    // tar_open_at_block_offset needs to seek straight to a member. Pass bsize <= 0 to
+    // skip position reporting — block and offset are then both reported as -1.
     bool tar_for_each_member_with_blocks(
         struct archive *a, int64_t bsize,
         const std::function<void(const std::string &name, int64_t block, int64_t offset,

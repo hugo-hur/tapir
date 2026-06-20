@@ -338,44 +338,6 @@ namespace tapir
 #endif
     }
 
-    bool tar_for_each_member(
-        struct archive *a,
-        const std::function<void(const std::string &, const std::string &, uint64_t, time_t, mode_t)> &cb,
-        const std::function<void(const std::string &, bool)> &on_header)
-    {
-        struct archive_entry *e;
-        int r;
-        while ((r = archive_read_next_header(a, &e)) == ARCHIVE_OK)
-        {
-            if (archive_entry_filetype(e) != AE_IFREG)
-            {
-                archive_read_data_skip(a);
-                continue;
-            }
-            const std::string name = normalize(epath(e));
-            const time_t entry_mtime = archive_entry_mtime(e);
-            const mode_t entry_mode = archive_entry_perm(e);
-            const bool is_tapir_index = (name == "manifest.json") && tar_entry_has_tapir_magic(e);
-            if (on_header)
-                on_header(name, is_tapir_index);
-            security::Sha256 sha;
-            const void *b;
-            size_t n;
-            la_int64_t off;
-            int rr;
-            uint64_t total = 0;
-            while ((rr = archive_read_data_block(a, &b, &n, &off)) == ARCHIVE_OK)
-            {
-                sha.update(b, n);
-                total += n;
-            }
-            if (rr != ARCHIVE_EOF)
-                return false;
-            cb(name, sha.hex(), total, entry_mtime, entry_mode);
-        }
-        return r == ARCHIVE_EOF;
-    }
-
     bool tar_for_each_member_with_blocks(
         struct archive *a, int64_t bsize,
         const std::function<void(const std::string &, int64_t, int64_t, const std::string &,

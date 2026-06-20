@@ -328,22 +328,6 @@ namespace tapir
         return ok;
     }
 
-    bool Tape::scan_archive(int tape_file, int block_factor, int64_t block_num,
-                            const std::function<void(const std::string &, const std::string &,
-                                                     uint64_t, time_t, mode_t)> &cb,
-                            const std::function<void(const std::string &, bool)> &on_header)
-    {
-        if (!seek_to(tape_file, block_num))
-            return false;
-        Fd fd;
-        ArchiveReadPtr a = open_read(dev_, block_factor * 512, fd);
-        if (!a)
-            return false;
-        const bool ok = tar_for_each_member(a.get(), cb, on_header);
-        file_number(); // capture post-read position (see read_latest_manifest)
-        return ok;
-    }
-
     bool Tape::scan_archive_with_blocks(int tape_file, int block_factor,
                                         const std::function<void(const std::string &, int64_t, int64_t,
                                                                  const std::string &, uint64_t,
@@ -358,57 +342,6 @@ namespace tapir
             return false;
         const bool ok = tar_for_each_member_with_blocks(
             a.get(), static_cast<int64_t>(block_factor) * 512, cb, on_header);
-        file_number(); // capture post-read position (see read_latest_manifest)
-        return ok;
-    }
-
-    bool Tape::scan_archive_detect(int tape_file, int &detected,
-                                   const std::function<void(const std::string &, const std::string &,
-                                                            uint64_t, time_t, mode_t)> &cb,
-                                   const std::function<void(const std::string &, bool)> &on_header)
-    {
-        detected = 0;
-
-        // Pass 1: read one physical block to learn its size (in variable-block mode
-        // a single read returns exactly one block).
-        if (!position_data(tape_file))
-            return false;
-        {
-            Fd fd(::open(dev_.c_str(), O_RDONLY));
-            if (!fd.valid())
-                return false;
-            std::vector<char> buf(1u << 22); // 4 MiB: larger than any expected tape block
-            const ssize_t n = ::read(fd.get(), buf.data(), buf.size());
-            if (n <= 0)
-            {
-                if (verbose_)
-                    std::fprintf(stderr, "  tape: file %d is empty or unreadable\n", tape_file);
-                return false;
-            }
-            detected = static_cast<int>(n);
-        }
-        // Raw read left us mid-file; current_file_ still says tape_file but we are
-        // no longer at its start. Invalidate so position_data does a proper reposition.
-        current_file_ = -1;
-        if (verbose_)
-            std::fprintf(stderr, "  tape: file %d physical block size = %d bytes\n", tape_file, detected);
-
-        // Pass 2: rewind and scan with the proven open_fd path, using a read buffer
-        // sized to the detected block so reads never come up short.
-        if (!position_data(tape_file))
-            return false;
-        Fd fd;
-        ArchiveReadPtr a = open_read(dev_, detected, fd);
-        if (!a)
-        {
-            if (verbose_)
-                std::fprintf(stderr, "  tape: file %d: could not open for reading\n", tape_file);
-            return false;
-        }
-        const bool ok = tar_for_each_member(a.get(), cb, on_header);
-        if (!ok && verbose_)
-            std::fprintf(stderr, "  tape: file %d: libarchive: %s\n",
-                         tape_file, archive_error_string(a.get()));
         file_number(); // capture post-read position (see read_latest_manifest)
         return ok;
     }
