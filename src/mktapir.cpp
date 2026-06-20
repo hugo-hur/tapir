@@ -222,6 +222,15 @@ static int do_import(const std::string &dev, const std::vector<int> &files, int 
 }
 
 // init: write a fresh empty tapir index on a blank (or force-overwritten) tape.
+//
+// TODO: let the create/convert path populate the tape in one step — accept an
+// optional `<file.tar>` or `-T <filelist>` (same inputs as `append`) so that
+// `mktapir <device> file.tar` (or `-T list`) writes a fresh index AND streams
+// the data as tape file 0, instead of requiring init-then-append. `do_append`
+// already handles the no-existing-index case (it starts a fresh index when no
+// manifest is found), so this is mostly wiring the init command's argv to the
+// append data path when a tar/filelist is supplied, and keeping the empty-index
+// behaviour when it is not.
 static int do_init(const std::string &dev, int mbf, bool force)
 {
     Tape tape(dev, mbf);
