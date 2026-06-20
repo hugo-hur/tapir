@@ -94,8 +94,11 @@ namespace tapir
         // block and skips the within-block header offset (fast path); otherwise, or
         // if that fast read fails, falls back to scanning the tape file from its
         // start. `block_offset` is the header's byte offset within `block_num`.
+        // out_block/out_offset, if non-null, are populated when the fallback full-scan
+        // path is used and the header position can be read — caller can cache it.
         bool read_member(int tape_file, int block_factor, int64_t block_num, int64_t block_offset,
-                         const std::string &member, Fd &out_fd, uint64_t &out_size);
+                         const std::string &member, Fd &out_fd, uint64_t &out_size,
+                         int64_t *out_block = nullptr, int64_t *out_offset = nullptr);
 
         // Stream every member of the data archive at `tape_file`, calling cb per file.
         // on_header(name) fires immediately on header read; cb fires after data is hashed.

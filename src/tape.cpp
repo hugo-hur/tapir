@@ -278,7 +278,8 @@ namespace tapir
     }
 
     bool Tape::read_member(int tape_file, int block_factor, int64_t block_num, int64_t block_offset,
-                           const std::string &member, Fd &out_fd, uint64_t &out_size)
+                           const std::string &member, Fd &out_fd, uint64_t &out_size,
+                           int64_t *out_block, int64_t *out_offset)
     {
         const int bsize = block_factor * 512;
 
@@ -293,7 +294,7 @@ namespace tapir
                 if (fd.valid())
                 {
                     ArchiveReadPtr a = tar_open_at_block_offset(fd.get(), bsize, block_offset);
-                    if (a && tar_extract_member(a.get(), member, out_fd, out_size))
+                    if (a && tar_extract_first_member(a.get(), out_fd, out_size))
                     {
                         current_file_ = -1; // mid-file after extract
                         return true;
@@ -301,6 +302,11 @@ namespace tapir
                 }
             }
             current_file_ = -1; // fast read failed — reposition cleanly for the fallback
+            std::fprintf(stderr,
+                         "tapir: positional read failed for '%s' "
+                         "(tape_file=%d block=%" PRId64 " offset=%" PRId64 ") — "
+                         "falling back to full scan\n",
+                         member.c_str(), tape_file, block_num, block_offset);
         }
 
         // Fallback: scan the whole tape file from its start. Correct for any member,
@@ -311,7 +317,13 @@ namespace tapir
         ArchiveReadPtr a = open_read(dev_, bsize, fd);
         if (!a)
             return false;
-        const bool ok = tar_extract_member(a.get(), member, out_fd, out_size);
+        la_int64_t found_pos = -1;
+        const bool ok = tar_extract_member(a.get(), member, out_fd, out_size, &found_pos);
+        if (ok && found_pos >= 0 && out_block && out_offset)
+        {
+            *out_block  = found_pos / bsize;
+            *out_offset = found_pos % bsize;
+        }
         current_file_ = -1;
         return ok;
     }
