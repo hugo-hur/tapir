@@ -427,16 +427,15 @@ static void usage(const char *argv0)
                  "      tape. With no -f, scans every data tape file (manifest files are\n"
                  "      skipped); -f takes a comma-separated list (e.g. -f 0,2,5). The block\n"
                  "      size is auto-detected per file; -b is only a fallback/override.\n"
-                 "  %s append <tape-device> <file.tar> [-b <block-factor>] [-m <manifest-bf>] [-v]\n"
-                 "      Re-stream a tar from disk into a new tape file at EOD and add its\n"
-                 "      contents to the index.\n"
-                 "  %s append <tape-device> -T {<filelist>|-} [-b <block-factor>] [-m <manifest-bf>] [-v]\n"
-                 "      Create a new tape file from a list of disk paths, one per line.\n"
-                 "      -T <filelist>: read paths from a file.\n"
-                 "      -T -: read paths from standard input.\n"
+                 "  %s append <tape-device> [<file.tar>] [-T <filelist>] [-b <block-factor>] [-m <manifest-bf>] [-v]\n"
+                 "      Write a new tape file at EOD and add its contents to the index.\n"
+                 "      <file.tar>: re-stream this tar; its members are indexed individually.\n"
+                 "      No filename: read a list of disk paths from stdin, one per line,\n"
+                 "                   and create a tar from those files.\n"
+                 "      -T <filelist>: read disk paths from a file instead of stdin.\n"
                  "  -v / --verbose   log tape positioning and, per member, '<name> <size> <sha256>'\n"
                  "                   as each member's SHA-256 finishes.\n",
-                 argv0, argv0, argv0, argv0);
+                 argv0, argv0, argv0);
 }
 
 int main(int argc, char **argv)
@@ -525,7 +524,7 @@ int main(int argc, char **argv)
                 mbf = std::atoi(argv[++i]);
         }
 
-        if (dev.rfind("/dev/", 0) != 0 || (tarpath.empty() && filelist.empty()))
+        if (dev.rfind("/dev/", 0) != 0)
         {
             usage(argv[0]);
             return 2;
@@ -535,6 +534,9 @@ int main(int argc, char **argv)
             std::fprintf(stderr, "mktapir: a positional tar file and -T are mutually exclusive\n");
             return 2;
         }
+        // No tar file and no -T <file>: default to reading paths from stdin.
+        if (tarpath.empty() && filelist.empty())
+            filelist = "-";
         return do_append(dev, tarpath, filelist, bf, mbf, verbose);
     }
 
