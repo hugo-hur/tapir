@@ -96,6 +96,17 @@ namespace tapir
         const std::function<void(const std::string &name, const std::string &sha256,
                                  uint64_t size, time_t mtime, mode_t mode)> &cb);
 
+    // Like tar_copy_members but also reports each member's write-side header position
+    // via archive_write_header_position() (tapir libarchive fork).
+    // `block` = pos / bsize, `offset` = pos % bsize — the same pair that
+    // tar_open_at_block_offset needs to seek straight to the member on tape.
+    // Requires HAVE_ARCHIVE_WRITE_HEADER_POSITION (--with-libarchive=bundled).
+    bool tar_copy_members_with_blocks(
+        struct archive *in, struct archive *out, int64_t bsize,
+        const std::function<void(const std::string &name, int64_t block, int64_t offset,
+                                 const std::string &sha256,
+                                 uint64_t size, time_t mtime, mode_t mode)> &cb);
+
 } // namespace tapir
 
 #endif // TAPIR_TAR_IO_HPP

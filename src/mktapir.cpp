@@ -185,8 +185,11 @@ static int do_import(const std::string &dev, const std::vector<int> &files, int 
                                  "at tape file %d; using detected\n",
                          bf_hint, detected_bf, f);
 
-        for (const auto &[name, sha, size, mtime, mode] : members)
-            idx.add_file(name, size, sha, f, bf, mtime, mode);
+        for (const auto &m : members)
+        {
+            idx.add_file(m.name, m.size, m.sha, f, bf, m.mtime, m.mode);
+            idx.fill_block_location(m.name, f, m.block, m.offset);
+        }
         total += static_cast<int>(members.size());
         std::fprintf(stderr, "mktapir: tape file %d: %zu file(s), block size %d bytes (factor %d)\n",
                      f, members.size(), detected, bf);
@@ -305,26 +308,37 @@ static int do_append(const std::string &dev, const std::string &tarpath, int bf,
         return 1;
     }
 
-    std::vector<std::tuple<std::string, std::string, uint64_t, time_t, mode_t>> collected;
+    struct AppendRec { std::string name, sha; uint64_t size; time_t mtime; mode_t mode;
+                       int64_t block, offset; };
+    std::vector<AppendRec> collected;
     int dtf = 0;
+    const int bsize = bf * 512;
     const bool ok = tape.append(
         bf,
         [&](struct archive *out)
         {
-            return tar_copy_members(in.get(), out,
-                                    [&](const std::string &name, const std::string &sha,
-                                        uint64_t size, time_t mtime, mode_t mode)
-                                    {
-                                        collected.emplace_back(name, sha, size, mtime, mode);
-                                        if (verbose)
-                                            std::fprintf(stderr, "    %s  %llu  %s\n", name.c_str(),
-                                                         static_cast<unsigned long long>(size), sha.c_str());
-                                    });
+            return tar_copy_members_with_blocks(
+                in.get(), out, bsize,
+                [&](const std::string &name, int64_t block, int64_t offset,
+                    const std::string &sha, uint64_t size, time_t mtime, mode_t mode)
+                {
+                    collected.push_back({name, sha, size, mtime, mode, block, offset});
+                    if (verbose)
+                        std::fprintf(stderr, "    %s  %llu  %s  block %lld+%lld\n",
+                                     name.c_str(),
+                                     static_cast<unsigned long long>(size), sha.c_str(),
+                                     static_cast<long long>(block),
+                                     static_cast<long long>(offset));
+                });
         },
         [&](int data_tape_file)
         {
-            for (auto &[name, sha, size, mtime, mode] : collected)
-                idx.add_file(name, size, sha, data_tape_file, bf, mtime, mode);
+            for (const auto &m : collected)
+            {
+                idx.add_file(m.name, m.size, m.sha, data_tape_file, bf, m.mtime, m.mode);
+                if (m.block >= 0)
+                    idx.fill_block_location(m.name, data_tape_file, m.block, m.offset);
+            }
             return idx.serialize(-1, mbf);
         },
         dtf);

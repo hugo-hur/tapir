@@ -4,6 +4,7 @@
 #include "tar_io.hpp"
 #include "security.hpp"
 
+#include <config.h>
 #include <archive.h>
 #include <archive_entry.h>
 
@@ -262,6 +263,61 @@ namespace tapir
                 cb(name, sha.hex(), total, entry_mtime, entry_mode);
         }
         return r == ARCHIVE_EOF;
+    }
+
+    bool tar_copy_members_with_blocks(
+        struct archive *in, struct archive *out, int64_t bsize,
+        const std::function<void(const std::string &, int64_t, int64_t,
+                                 const std::string &, uint64_t, time_t, mode_t)> &cb)
+    {
+#ifndef HAVE_ARCHIVE_WRITE_HEADER_POSITION
+        (void)bsize;
+        // Fall back to tar_copy_members with a stub that passes block=-1, offset=-1.
+        return tar_copy_members(in, out,
+            [&](const std::string &name, const std::string &sha, uint64_t size, time_t mt, mode_t mo)
+            { cb(name, -1, -1, sha, size, mt, mo); });
+#else
+        struct archive_entry *e;
+        int r;
+        while ((r = archive_read_next_header(in, &e)) == ARCHIVE_OK)
+        {
+            const std::string name = normalize(epath(e));
+            const time_t entry_mtime = archive_entry_mtime(e);
+            const mode_t entry_mode = archive_entry_perm(e);
+            archive_entry_set_pathname_utf8(e, name.c_str());
+            if (archive_write_header(out, e) != ARCHIVE_OK)
+                return false;
+            // Capture the byte offset of this header in the write stream immediately
+            // after archive_write_header() — this is what archive_write_header_position()
+            // was added to the tapir fork to provide.
+            const la_int64_t pos = archive_write_header_position(out);
+            const int64_t block  = (bsize > 0 && pos >= 0) ? pos / bsize : -1;
+            const int64_t offset = (bsize > 0 && pos >= 0) ? pos % bsize : -1;
+
+            const bool is_file = archive_entry_filetype(e) == AE_IFREG && archive_entry_hardlink(e) == nullptr;
+            security::Sha256 sha;
+            uint64_t total = 0;
+            const void *b;
+            size_t n;
+            la_int64_t off;
+            int rr;
+            while ((rr = archive_read_data_block(in, &b, &n, &off)) == ARCHIVE_OK)
+            {
+                if (archive_write_data(out, b, n) < 0)
+                    return false;
+                if (is_file)
+                {
+                    sha.update(b, n);
+                    total += n;
+                }
+            }
+            if (rr != ARCHIVE_EOF)
+                return false;
+            if (is_file)
+                cb(name, block, offset, sha.hex(), total, entry_mtime, entry_mode);
+        }
+        return r == ARCHIVE_EOF;
+#endif
     }
 
     bool tar_for_each_member(
