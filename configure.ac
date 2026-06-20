@@ -13,12 +13,12 @@
 # autoconf-archive is NOT required; pkg-config is used for the libraries).
 
 AC_PREREQ([2.69])
-AC_INIT([tapir], [0.1.0], [hugo.hurskainen@gmail.com])
+AC_INIT([tapir], [1.1.0], [hugo.hurskainen@gmail.com])
 AC_CONFIG_AUX_DIR([build-aux])
 AC_CONFIG_MACRO_DIR([m4])
 AC_CONFIG_SRCDIR([src/tapir.cpp])
 AC_CONFIG_HEADERS([config.h])
-AM_INIT_AUTOMAKE([foreign subdir-objects -Wall])
+AM_INIT_AUTOMAKE([foreign subdir-objects -Wall tar-pax])
 AM_PROG_AR
 
 # ── 1. C++ compiler + standard ────────────────────────────────────────────────
