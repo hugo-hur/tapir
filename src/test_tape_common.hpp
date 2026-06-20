@@ -100,7 +100,14 @@ inline bool write_archive(const char *dev, int bf, std::vector<Member> &ms, int 
     dtf = -1;
     return tape.append(
         bf,
-        [&](struct archive *a) { return tar_write_files(a, outs); },
+        [&](struct archive *a) {
+            for (const auto &of : outs) {
+                int64_t blk, off;
+                if (!tar_write_file(a, of, static_cast<int64_t>(bf) * 512, blk, off))
+                    return false;
+            }
+            return true;
+        },
         [&](int data_dtf) {
             for (auto &m : ms) idx.add_file(m.name, m.content.size(), m.sha, data_dtf, bf, 0, 0);
             return idx.serialize(-1, bf);

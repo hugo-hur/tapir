@@ -346,11 +346,11 @@ first in a multi-member tar. If the offset is unrecorded it falls back to a corr
 > file appended via `mktapir append` is directly seekable from the first mount,
 > with no `tfsck` pass needed.
 >
-> **TODO — FUSE writer-side offset:** files written through the FUSE mount (staged
-> and flushed by the background writer thread) currently record `tape_block` but
-> leave `tape_block_offset` unset. Those members read via the slower full-file scan
-> until a `tfsck` pass fills the exact offsets. Fixing this requires the same
-> `archive_write_header_position()` call in `writer.cpp`.
+> **FUSE writer also records exact offsets** — the background writer thread
+> (`writer.cpp`) calls `archive_write_header_position()` immediately after each
+> `archive_write_header()` and stores both `tape_block` and `tape_block_offset` in
+> the index. Files written through the FUSE mount are directly seekable from the
+> first mount, with no `tfsck` pass needed.
 
 Each manifest is cumulative and supersedes the previous one. On WORM tapes all
 prior manifests are preserved and recoverable via `tfsck --rollback` /

@@ -152,7 +152,7 @@ namespace tapir
 
         // Open a new tape file at EOD for streaming multi-member writes.
         // The caller receives an open ArchiveWritePtr (write to it with
-        // tar_write_files) and the write Fd (needed for mt_blkno queries).
+        // tar_write_file) and the write Fd (needed for mt_blkno queries).
         // Call note_write_done() + close the Fd after archive_write_close().
         bool open_write_at_eod(int block_factor,
                                ArchiveWritePtr &out_ar, Fd &out_fd,

@@ -91,37 +91,27 @@ void WriterThread::enqueue_file(Node *node, std::shared_ptr<Staged> data,
                 node->staged.reset();
                 return;
             }
-            open_write_.emplace(OpenWrite{std::move(fd), std::move(ar), tape_file, 0});
+            open_write_.emplace(OpenWrite{std::move(fd), std::move(ar), tape_file});
         }
 
-        // Record the physical-block offset of this member's tar header.
-        // archive_filter_bytes(-1) returns bytes actually flushed to the tape fd so
-        // far; dividing by the physical block size gives the block number where the
-        // next archive_write_header will land (possibly sharing a block with earlier
-        // small members). seek_to() uses MTFSR to skip to this block at read time.
         const int64_t bsize = static_cast<int64_t>(block_factor_) * 512;
-        const int64_t this_block = open_write_->next_member_block;
-
         OutFile of{path, data->fd.get(), data->size, mtime, node->mode};
-        const bool ok = tar_write_files(open_write_->ar.get(), {of});
-
-        if (ok) {
-            // Update next_member_block from bytes flushed to tape after this write.
-            const la_int64_t flushed = archive_filter_bytes(open_write_->ar.get(), -1);
-            open_write_->next_member_block = (flushed >= 0) ? flushed / bsize : -1;
-        }
+        int64_t blk = -1, off = -1;
+        const bool ok = tar_write_file(open_write_->ar.get(), of, bsize, blk, off);
 
         std::lock_guard<std::mutex> gl(state_mtx_);
         if (ok) {
             node->data_tape_file = open_write_->tape_file;
             node->block_factor   = block_factor_;
-            node->block_number   = this_block;
+            node->block_number   = blk;
+            node->block_offset   = off;
             // Keep node->staged alive — it serves read-after-write until sync() closes
             // this tape file, the point at which the member becomes re-readable from
             // tape. Mark it flushed so sync() knows it is safe to release.
             node->staged_flushed = true;
-            std::fprintf(stderr, "tapir: writer: wrote '%s' -> tape file %d block %" PRId64 "\n",
-                         path.c_str(), open_write_->tape_file, this_block);
+            std::fprintf(stderr,
+                         "tapir: writer: wrote '%s' -> tape file %d block %" PRId64 " offset %" PRId64 "\n",
+                         path.c_str(), open_write_->tape_file, blk, off);
         } else {
             std::fprintf(stderr, "tapir: writer: FAILED to write '%s'\n", path.c_str());
             node->staged.reset(); // write failed: data is not on tape, drop the staged copy

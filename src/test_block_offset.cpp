@@ -17,7 +17,7 @@
 //     the recommended fix) extracts the member correctly.
 //
 // This test always runs (no TAPIR_TEST_DEVICE needed). It exercises the real
-// tar I/O primitives (tar_write_files / tar_extract_member) and pins down the
+// tar I/O primitives (tar_write_file / tar_extract_member) and pins down the
 // invariant the read-side fix must satisfy.
 
 #include "test_tape_common.hpp"   // check(), gen(), make_src(), Fd, finish()
@@ -63,7 +63,11 @@ int main()
             {"big",    bigsrc.get(), big.size(), 0, 0},
             {"target", tgtsrc.get(), tgt.size(), 0, 0},
         };
-        bool wrote = wopen && tar_write_files(w, outs);
+        bool wrote = wopen;
+        for (const auto &of : outs) {
+            int64_t blk, boff;
+            wrote = wrote && tar_write_file(w, of, B, blk, boff);
+        }
         archive_write_close(w);
         archive_write_free(w);
         check(wrote, "wrote 2-member block-padded tar");

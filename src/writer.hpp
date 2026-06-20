@@ -72,7 +72,6 @@ private:
         Fd              fd;                  // must outlive ar (filemark written on fd close)
         ArchiveWritePtr ar;                  // freed first → writes end-of-archive blocks
         int             tape_file   = -1;
-        int64_t         next_member_block = 0; // within-file block offset for the next member
     };
     std::optional<OpenWrite> open_write_;
 

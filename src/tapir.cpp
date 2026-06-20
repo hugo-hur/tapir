@@ -284,7 +284,7 @@ namespace
         else if (n->staged)
         {
             // File closed but writer thread still in flight: serve from temp fd.
-            // tar_write_files uses pread, so concurrent access is safe.
+            // tar_write_file uses pread, so concurrent access is safe.
             fd = n->staged->fd.get();
             fsize = n->staged->size;
         }
