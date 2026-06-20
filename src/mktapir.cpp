@@ -31,6 +31,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <iostream>
 #include <string>
 #include <tuple>
 #include <vector>
@@ -274,8 +276,12 @@ static int do_init(const std::string &dev, int mbf, bool force)
     return 0;
 }
 
-// append: re-stream a tar from disk into a new tape file at EOD and index it.
-static int do_append(const std::string &dev, const std::string &tarpath, int bf, int mbf, bool verbose)
+// append: stream files into a new tape file at EOD and index them.
+// tarpath: path to a .tar file to re-stream (empty when using filelist mode).
+// filelist: path to a file containing one disk path per line, or "-" for stdin
+//           (empty when using tarpath mode).
+static int do_append(const std::string &dev, const std::string &tarpath,
+                     const std::string &filelist, int bf, int mbf, bool verbose)
 {
     Tape tape(dev, mbf);
     tape.set_verbose(verbose); // narrate tape positioning/reads
@@ -299,56 +305,108 @@ static int do_append(const std::string &dev, const std::string &tarpath, int bf,
         std::fprintf(stderr, "mktapir: no existing manifest; starting a new index\n");
     }
 
-    ArchiveReadPtr in(archive_read_new());
-    archive_read_support_filter_all(in.get()); // gzip/xz/zstd/etc.
-    archive_read_support_format_all(in.get()); // V7/ustar/GNU/pax/star
-    if (archive_read_open_filename(in.get(), tarpath.c_str(), 1 << 16) != ARCHIVE_OK)
-    {
-        std::fprintf(stderr, "mktapir: cannot open tar %s\n", tarpath.c_str());
-        return 1;
-    }
-
     struct AppendRec { std::string name, sha; uint64_t size; time_t mtime; mode_t mode;
                        int64_t block, offset; };
     std::vector<AppendRec> collected;
     int dtf = 0;
     const int bsize = bf * 512;
-    const bool ok = tape.append(
-        bf,
-        [&](struct archive *out)
+
+    auto on_member = [&](const std::string &name, int64_t block, int64_t offset,
+                          const std::string &sha, uint64_t size, time_t mtime, mode_t mode)
+    {
+        collected.push_back({name, sha, size, mtime, mode, block, offset});
+        if (verbose)
+            std::fprintf(stderr, "    %s  %llu  %s  block %lld+%lld\n",
+                         name.c_str(),
+                         static_cast<unsigned long long>(size), sha.c_str(),
+                         static_cast<long long>(block),
+                         static_cast<long long>(offset));
+    };
+
+    auto make_manifest = [&](int data_tape_file) -> std::string
+    {
+        for (const auto &m : collected)
         {
-            return tar_copy_members_with_blocks(
-                in.get(), out, bsize,
-                [&](const std::string &name, int64_t block, int64_t offset,
-                    const std::string &sha, uint64_t size, time_t mtime, mode_t mode)
-                {
-                    collected.push_back({name, sha, size, mtime, mode, block, offset});
-                    if (verbose)
-                        std::fprintf(stderr, "    %s  %llu  %s  block %lld+%lld\n",
-                                     name.c_str(),
-                                     static_cast<unsigned long long>(size), sha.c_str(),
-                                     static_cast<long long>(block),
-                                     static_cast<long long>(offset));
-                });
-        },
-        [&](int data_tape_file)
+            idx.add_file(m.name, m.size, m.sha, data_tape_file, bf, m.mtime, m.mode);
+            if (m.block >= 0)
+                idx.fill_block_location(m.name, data_tape_file, m.block, m.offset);
+        }
+        return idx.serialize(-1, mbf);
+    };
+
+    bool ok;
+    std::string source_desc;
+
+    if (!filelist.empty())
+    {
+        // Read file paths from stdin or a named file, one per line.
+        std::vector<std::string> paths;
+        auto read_paths = [&](std::istream &is)
         {
-            for (const auto &m : collected)
+            std::string line;
+            while (std::getline(is, line))
             {
-                idx.add_file(m.name, m.size, m.sha, data_tape_file, bf, m.mtime, m.mode);
-                if (m.block >= 0)
-                    idx.fill_block_location(m.name, data_tape_file, m.block, m.offset);
+                if (!line.empty() && line.back() == '\r')
+                    line.pop_back();
+                if (!line.empty())
+                    paths.push_back(std::move(line));
             }
-            return idx.serialize(-1, mbf);
-        },
-        dtf);
+        };
+        if (filelist == "-")
+        {
+            read_paths(std::cin);
+            source_desc = "stdin file list";
+        }
+        else
+        {
+            std::ifstream fs(filelist);
+            if (!fs)
+            {
+                std::fprintf(stderr, "mktapir: cannot open file list %s\n", filelist.c_str());
+                return 1;
+            }
+            read_paths(fs);
+            source_desc = "file list " + filelist;
+        }
+        if (paths.empty())
+        {
+            std::fprintf(stderr, "mktapir: empty file list\n");
+            return 1;
+        }
+        ok = tape.append(
+            bf,
+            [&](struct archive *out)
+            { return tar_create_from_paths_with_blocks(paths, out, bsize, on_member); },
+            make_manifest,
+            dtf);
+    }
+    else
+    {
+        // Re-stream an existing tar file onto tape.
+        ArchiveReadPtr in(archive_read_new());
+        archive_read_support_filter_all(in.get()); // gzip/xz/zstd/etc.
+        archive_read_support_format_all(in.get()); // V7/ustar/GNU/pax/star
+        if (archive_read_open_filename(in.get(), tarpath.c_str(), 1 << 16) != ARCHIVE_OK)
+        {
+            std::fprintf(stderr, "mktapir: cannot open tar %s\n", tarpath.c_str());
+            return 1;
+        }
+        source_desc = tarpath;
+        ok = tape.append(
+            bf,
+            [&](struct archive *out)
+            { return tar_copy_members_with_blocks(in.get(), out, bsize, on_member); },
+            make_manifest,
+            dtf);
+    }
+
     if (!ok)
     {
         std::fprintf(stderr, "mktapir: append failed\n");
         return 1;
     }
     std::fprintf(stderr, "mktapir: appended %zu file(s) from %s as tape file %d; index updated\n",
-                 collected.size(), tarpath.c_str(), dtf);
+                 collected.size(), source_desc.c_str(), dtf);
     std::fprintf(stderr, "mktapir: volume %s, write-generation %llu\n",
                  idx.volume_uuid().c_str(), static_cast<unsigned long long>(idx.latest_generation()));
     return 0;
@@ -372,9 +430,13 @@ static void usage(const char *argv0)
                  "  %s append <tape-device> <file.tar> [-b <block-factor>] [-m <manifest-bf>] [-v]\n"
                  "      Re-stream a tar from disk into a new tape file at EOD and add its\n"
                  "      contents to the index.\n"
+                 "  %s append <tape-device> -T {<filelist>|-} [-b <block-factor>] [-m <manifest-bf>] [-v]\n"
+                 "      Create a new tape file from a list of disk paths, one per line.\n"
+                 "      -T <filelist>: read paths from a file.\n"
+                 "      -T -: read paths from standard input.\n"
                  "  -v / --verbose   log tape positioning and, per member, '<name> <size> <sha256>'\n"
                  "                   as each member's SHA-256 finishes.\n",
-                 argv0, argv0, argv0);
+                 argv0, argv0, argv0, argv0);
 }
 
 int main(int argc, char **argv)
@@ -438,27 +500,42 @@ int main(int argc, char **argv)
         return do_import(dev, files, bf, mbf, verbose);
     }
 
-    if (argc >= 4 && std::strcmp(argv[1], "append") == 0)
+    if (argc >= 3 && std::strcmp(argv[1], "append") == 0)
     {
-        const std::string dev = argv[2], tarpath = argv[3];
+        const std::string dev = argv[2];
+        std::string tarpath, filelist;
         int bf = 512, mbf = 512;
         bool verbose = false;
-        for (int i = 4; i < argc; ++i)
+
+        int i = 3;
+        // Optional positional tarpath: present when the next arg is not a flag.
+        if (i < argc && argv[i][0] != '-')
+            tarpath = argv[i++];
+
+        for (; i < argc; ++i)
         {
             const std::string a = argv[i];
             if (a == "-v" || a == "--verbose")
                 verbose = true;
+            else if ((a == "-T" || a == "--files-from") && i + 1 < argc)
+                filelist = argv[++i];
             else if ((a == "-b" || a == "--block-factor") && i + 1 < argc)
                 bf = std::atoi(argv[++i]);
             else if ((a == "-m" || a == "--manifest-block-factor") && i + 1 < argc)
                 mbf = std::atoi(argv[++i]);
         }
-        if (dev.rfind("/dev/", 0) != 0)
+
+        if (dev.rfind("/dev/", 0) != 0 || (tarpath.empty() && filelist.empty()))
         {
             usage(argv[0]);
             return 2;
         }
-        return do_append(dev, tarpath, bf, mbf, verbose);
+        if (!tarpath.empty() && !filelist.empty())
+        {
+            std::fprintf(stderr, "mktapir: a positional tar file and -T are mutually exclusive\n");
+            return 2;
+        }
+        return do_append(dev, tarpath, filelist, bf, mbf, verbose);
     }
 
     usage(argv[0]);

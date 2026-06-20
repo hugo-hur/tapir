@@ -8,6 +8,7 @@
 #include <archive.h>
 #include <archive_entry.h>
 
+#include <cerrno>
 #include <cstdlib>
 #include <cstring>
 #include <vector>
@@ -401,6 +402,81 @@ namespace tapir
             cb(name, block, offset, sha.hex(), total, entry_mtime, entry_mode);
         }
         return r == ARCHIVE_EOF;
+    }
+
+    bool tar_create_from_paths_with_blocks(
+        const std::vector<std::string> &paths,
+        struct archive *out, int64_t bsize,
+        const std::function<void(const std::string &, int64_t, int64_t,
+                                 const std::string &, uint64_t, time_t, mode_t)> &cb)
+    {
+        ArchiveReadPtr disk(archive_read_disk_new());
+        if (!disk)
+            return false;
+        archive_read_disk_set_standard_lookup(disk.get());
+
+        std::vector<std::byte> buf(kReadBlock);
+
+        for (const auto &srcpath : paths)
+        {
+            ArchiveEntryPtr e(archive_entry_new());
+            if (!e)
+                return false;
+            archive_entry_copy_sourcepath(e.get(), srcpath.c_str());
+            if (archive_read_disk_entry_from_file(disk.get(), e.get(), -1, nullptr) != ARCHIVE_OK)
+            {
+                std::fprintf(stderr, "warning: %s: %s\n",
+                             srcpath.c_str(), archive_error_string(disk.get()));
+                continue;
+            }
+
+            const std::string name = normalize(archive_entry_pathname(e.get()));
+            archive_entry_set_pathname_utf8(e.get(), name.c_str());
+
+            const time_t mtime = archive_entry_mtime(e.get());
+            const mode_t mode  = archive_entry_perm(e.get());
+
+            if (archive_write_header(out, e.get()) != ARCHIVE_OK)
+                return false;
+
+#ifdef HAVE_ARCHIVE_WRITE_HEADER_POSITION
+            const la_int64_t pos = archive_write_header_position(out);
+            const int64_t block  = (bsize > 0 && pos >= 0) ? pos / bsize : -1;
+            const int64_t offset = (bsize > 0 && pos >= 0) ? pos % bsize : -1;
+#else
+            (void)bsize;
+            const int64_t block = -1, offset = -1;
+#endif
+
+            if (archive_entry_filetype(e.get()) != AE_IFREG ||
+                archive_entry_hardlink(e.get()) != nullptr)
+                continue;
+
+            Fd fd(::open(srcpath.c_str(), O_RDONLY));
+            if (!fd.valid())
+            {
+                std::fprintf(stderr, "warning: cannot open %s: %s\n",
+                             srcpath.c_str(), std::strerror(errno));
+                continue;
+            }
+
+            security::Sha256 sha;
+            uint64_t total = 0;
+            ssize_t n;
+            while ((n = ::read(fd.get(),
+                               static_cast<void *>(buf.data()), buf.size())) > 0)
+            {
+                if (archive_write_data(out, buf.data(), static_cast<size_t>(n)) < 0)
+                    return false;
+                sha.update(buf.data(), static_cast<size_t>(n));
+                total += static_cast<uint64_t>(n);
+            }
+            if (n < 0)
+                return false;
+
+            cb(name, block, offset, sha.hex(), total, mtime, mode);
+        }
+        return true;
     }
 
 } // namespace tapir

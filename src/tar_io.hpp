@@ -107,6 +107,21 @@ namespace tapir
                                  const std::string &sha256,
                                  uint64_t size, time_t mtime, mode_t mode)> &cb);
 
+    // Create a tar in write-archive `out` from a list of disk paths, one entry per
+    // path.  Each path is stat'd via archive_read_disk_entry_from_file() and its
+    // data read with read().  Non-regular-file entries (dirs, symlinks) are written
+    // as header-only.  Files that cannot be opened are skipped with a warning.
+    // Calls cb(name, block, offset, sha256, size, mtime, mode) per regular file,
+    // where block/offset come from archive_write_header_position() (falls back to
+    // -1/-1 when the fork feature is absent).  Returns false only on a fatal archive
+    // write error; per-file access errors are non-fatal.
+    bool tar_create_from_paths_with_blocks(
+        const std::vector<std::string> &paths,
+        struct archive *out, int64_t bsize,
+        const std::function<void(const std::string &name, int64_t block, int64_t offset,
+                                 const std::string &sha256,
+                                 uint64_t size, time_t mtime, mode_t mode)> &cb);
+
 } // namespace tapir
 
 #endif // TAPIR_TAR_IO_HPP
