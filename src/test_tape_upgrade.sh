@@ -26,6 +26,9 @@ say "=== test_tape_upgrade on $DEV (manifest bf=$BF) ==="
 add d_u upg_member 50000
 mt -f "$DEV" setblk 0 >/dev/null 2>&1; mt -f "$DEV" rewind
 ( cd "$SRC/d_u" && tar -b 256 -H gnu -cf "$DEV" upg_member )   # f0
+# tar writes one filemark; a second consecutive filemark signals EOD to the drive
+# so MTEOM lands here, not at any stale EOD left by the previous test.
+mt -f "$DEV" weof 1
 "$BIN/mktapir" import "$DEV" -m "$BF" >>"$WORK/setup_import.log" 2>&1
 res $? "setup_import" "tapir index (with magic) at end of tape"
 
