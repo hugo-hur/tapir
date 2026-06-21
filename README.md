@@ -229,8 +229,44 @@ Tape positioning uses Linux `st` driver ioctls (`<sys/mtio.h>`) directly — no
 ./autogen.sh      # regenerate ./configure (required after checkout or editing configure.ac)
 ./configure       # checks C++20/23, libarchive, libfuse3, nlohmann/json, libcrypto
 make
-make check        # run unit tests
+make check        # run the device-free unit tests
 ```
+
+### Testing against a real tape drive
+
+`make check` runs the device-free unit tests unconditionally. The hardware
+tests — sequential and per-member seek reads, the FUSE mount round-trip, and the
+import / append / repair / manifest-upgrade flows — **SKIP** (exit 77) unless a
+tape device is supplied. Point `TAPIR_TEST_DEVICE` at a **scratch no-rewind
+device** to run them too:
+
+```sh
+TAPIR_TEST_DEVICE=/dev/tape/by-id/scsi-XXXX-nst make check
+```
+
+> **WARNING:** the hardware tests reformat the cartridge (`mktapir --force`,
+> writing from start of tape). Only ever point `TAPIR_TEST_DEVICE` at a
+> **scratch tape** — all existing data on it is destroyed.
+
+The tests share the single drive, so run them **serially** (the default `make
+check`; do not add `-j`). The shell tests also need `mt`, `tar`, `gzip`, and
+`fusermount3` on `PATH` (the `tar.xz` append case additionally needs `xz`, and
+is skipped if it is missing). Optional knobs:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `TAPIR_TEST_DEVICE` | _(unset → SKIP)_ | scratch no-rewind tape device (`…-nst`) |
+| `TAPIR_TEST_BLOCK_FACTOR` | `256` | blocking factor ×512 (256 = 128 KiB) |
+| `TAPIR_TEST_BIGSIZE` | `8388608` | bytes for the large-file case; set large to exercise the >4 GiB / 64-bit `off_t` path |
+
+```sh
+# run a single hardware test, with a larger blocking factor:
+TAPIR_TEST_DEVICE=/dev/tape/by-id/scsi-XXXX-nst TAPIR_TEST_BLOCK_FACTOR=512 \
+    make check TESTS=test_tape_mount.sh
+```
+
+Per-test output is written to `src/<test>.log`; `src/test-suite.log` collects
+any failures.
 
 `./configure` accepts the usual overrides:
 
