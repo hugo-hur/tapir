@@ -131,6 +131,7 @@ void WriterThread::sync(std::unique_lock<std::mutex> &lk)
 
     push([sp, this]()
     {
+        // push index write job to the queue
         // Close the open tape file before writing the manifest. All prior
         // enqueue_file() tasks have already run (queue is FIFO).
         // archive_write_close writes end-of-archive blocks; resetting open_write_
@@ -186,9 +187,9 @@ void WriterThread::sync(std::unique_lock<std::mutex> &lk)
         sp->set_value();
     });
 
-    lk.unlock(); // release state_mtx_ so the writer thread can acquire it
-    fut.wait();
-    lk.lock();
 }
+        lk.unlock(); // release state_mtx_ so the writer thread can acquire it and start running the sync job
+        fut.wait();  // wait until writer thread is ready processing the sync job
+        lk.lock();   // reacquire lock
 
 } // namespace tapir
