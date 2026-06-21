@@ -15,70 +15,73 @@
 namespace tapir
 {
 
-WriterThread::WriterThread(Tape &tape, int block_factor,
-                           std::mutex &state_mtx, Index &index)
-    : tape_(tape), block_factor_(block_factor),
-      state_mtx_(state_mtx), index_(index),
-      thread_([this](std::stop_token st) { run(st); })
-{}
-
-void WriterThread::push(std::function<void()> task)
-{
+    WriterThread::WriterThread(Tape &tape, int block_factor,
+                               std::mutex &state_mtx, Index &index)
+        : tape_(tape), block_factor_(block_factor),
+          state_mtx_(state_mtx), index_(index),
+          thread_([this](std::stop_token st)
+                  { run(st); })
     {
-        std::lock_guard<std::mutex> lk(queue_mtx_);
-        queue_.push_back(std::move(task));
     }
-    queue_cv_.notify_one();
-}
 
-// Sleeps until a tape-write task arrives in the queue, then returns true.
-// Returns false only when the thread has been asked to stop and the queue is
-// empty — meaning every pending write has already completed.
-//
-// Uses condition_variable_any::wait(lock, stop_token, pred) — a C++20 overload
-// that internally registers a stop callback on the stop_token so that
-// request_stop() (called by ~jthread) wakes this wait without any extra
-// notify_one() call from the destructor side.
-//
-// Return value encodes why the wait ended:
-//   true  — queue is non-empty; caller should dequeue and run the next task.
-//   false — stop was requested AND the queue is empty; caller should exit.
-//
-// Drain guarantee: if stop fires while tasks remain, the predicate
-// !queue_.empty() is still true, so wait() keeps returning true and the loop
-// continues until every queued task has run. This ensures all in-flight file
-// writes and the final manifest flush complete before the thread joins.
-WriterThread::WaitResult
-WriterThread::wait_for_work(std::unique_lock<std::mutex> &lk, std::stop_token st)
-{
-    // The predicate answers "is there something to write?". The thread blocks
-    // as long as it returns false (queue empty). When push() enqueues a task
-    // and calls notify_one(), the predicate is re-checked; if it now returns
-    // true the thread wakes and wait() returns HasWork to the caller. On
-    // spurious wake-ups (which condition variables may produce) the predicate
-    // returning false simply puts the thread back to sleep.
-    const bool has_work = queue_cv_.wait(lk, st, [this] { return !queue_.empty(); });
-    return has_work ? WaitResult::HasWork : WaitResult::Stopping;
-}
-
-void WriterThread::run(std::stop_token st)
-{
-    std::unique_lock<std::mutex> lk(queue_mtx_);
-    while (wait_for_work(lk, st) == WaitResult::HasWork)
+    void WriterThread::push(std::function<void()> task)
     {
-        auto task = std::move(queue_.front());
-        queue_.pop_front();
-        lk.unlock();
-        task();
-        lk.lock();
+        {
+            std::lock_guard<std::mutex> lk(queue_mtx_);
+            queue_.push_back(std::move(task));
+        }
+        queue_cv_.notify_one();
     }
-}
 
-void WriterThread::enqueue_file(Node *node, std::shared_ptr<Staged> data,
-                                std::string path, time_t mtime)
-{
-    push([node, data = std::move(data), path = std::move(path), mtime, this]()
+    // Sleeps until a tape-write task arrives in the queue, then returns true.
+    // Returns false only when the thread has been asked to stop and the queue is
+    // empty — meaning every pending write has already completed.
+    //
+    // Uses condition_variable_any::wait(lock, stop_token, pred) — a C++20 overload
+    // that internally registers a stop callback on the stop_token so that
+    // request_stop() (called by ~jthread) wakes this wait without any extra
+    // notify_one() call from the destructor side.
+    //
+    // Return value encodes why the wait ended:
+    //   true  — queue is non-empty; caller should dequeue and run the next task.
+    //   false — stop was requested AND the queue is empty; caller should exit.
+    //
+    // Drain guarantee: if stop fires while tasks remain, the predicate
+    // !queue_.empty() is still true, so wait() keeps returning true and the loop
+    // continues until every queued task has run. This ensures all in-flight file
+    // writes and the final manifest flush complete before the thread joins.
+    WriterThread::WaitResult
+    WriterThread::wait_for_work(std::unique_lock<std::mutex> &lk, std::stop_token st)
     {
+        // The predicate answers "is there something to write?". The thread blocks
+        // as long as it returns false (queue empty). When push() enqueues a task
+        // and calls notify_one(), the predicate is re-checked; if it now returns
+        // true the thread wakes and wait() returns HasWork to the caller. On
+        // spurious wake-ups (which condition variables may produce) the predicate
+        // returning false simply puts the thread back to sleep.
+        const bool has_work = queue_cv_.wait(lk, st, [this]
+                                             { return !queue_.empty(); });
+        return has_work ? WaitResult::HasWork : WaitResult::Stopping;
+    }
+
+    void WriterThread::run(std::stop_token st)
+    {
+        std::unique_lock<std::mutex> lk(queue_mtx_);
+        while (wait_for_work(lk, st) == WaitResult::HasWork)
+        {
+            auto task = std::move(queue_.front());
+            queue_.pop_front();
+            lk.unlock();
+            task();
+            lk.lock();
+        }
+    }
+
+    void WriterThread::enqueue_file(Node *node, std::shared_ptr<Staged> data,
+                                    std::string path, time_t mtime)
+    {
+        push([node, data = std::move(data), path = std::move(path), mtime, this]()
+             {
         // Open a new tape file if none is currently in progress.
         if (!open_write_) {
             ArchiveWritePtr ar;
@@ -115,23 +118,22 @@ void WriterThread::enqueue_file(Node *node, std::shared_ptr<Staged> data,
         } else {
             std::fprintf(stderr, "tapir: writer: FAILED to write '%s'\n", path.c_str());
             node->staged.reset(); // write failed: data is not on tape, drop the staged copy
-        }
-    });
-}
+        } });
+    }
 
-void WriterThread::sync(std::unique_lock<std::mutex> &lk)
-{
-    if (!index_.dirty())
-        return;
-
-    // std::promise is move-only; wrap in shared_ptr so the capturing lambda
-    // satisfies std::function's CopyConstructible requirement.
-    auto sp  = std::make_shared<std::promise<void>>();
-    auto fut = sp->get_future();
-
-    push([sp, this]()
+    void WriterThread::sync(std::unique_lock<std::mutex> &lk)
     {
+        if (!index_.dirty())
+            return;
+
+        // std::promise is move-only; wrap in shared_ptr so the capturing lambda
+        // satisfies std::function's CopyConstructible requirement.
+        auto sp = std::make_shared<std::promise<void>>();
+        auto fut = sp->get_future();
+        
         // push index write job to the queue
+        push([sp, this]()
+             {
         // Close the open tape file before writing the manifest. All prior
         // enqueue_file() tasks have already run (queue is FIFO).
         // archive_write_close writes end-of-archive blocks; resetting open_write_
@@ -184,12 +186,11 @@ void WriterThread::sync(std::unique_lock<std::mutex> &lk)
         {
             std::fprintf(stderr, "tapir: writer: FAILED to write manifest to tape\n");
         }
-        sp->set_value();
-    });
+        sp->set_value(); });
 
-}
         lk.unlock(); // release state_mtx_ so the writer thread can acquire it and start running the sync job
         fut.wait();  // wait until writer thread is ready processing the sync job
         lk.lock();   // reacquire lock
+    }
 
 } // namespace tapir
