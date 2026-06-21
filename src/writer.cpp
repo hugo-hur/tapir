@@ -144,6 +144,7 @@ void WriterThread::sync(std::unique_lock<std::mutex> &lk)
         }
 
         std::string manifest;
+        uint64_t snap_version = 0;
         {
             std::lock_guard<std::mutex> gl(state_mtx_);
             // The tape file is now closed and re-readable, so drop the staged temp
@@ -153,6 +154,10 @@ void WriterThread::sync(std::unique_lock<std::mutex> &lk)
             // their staged copy for the next sync.
             index_.release_flushed_staged();
             manifest = index_.serialize(0, block_factor_);
+            // Snapshot the index version that produced this manifest. serialize()
+            // does not advance it, so any FUSE mutation landing during the unlocked
+            // tape write below will push version() past this value.
+            snap_version = index_.version();
         }
 
         int out_mtf = 0;
@@ -160,7 +165,18 @@ void WriterThread::sync(std::unique_lock<std::mutex> &lk)
         if (ok)
         {
             std::lock_guard<std::mutex> gl(state_mtx_);
-            index_.mark_clean();
+            // Only mark clean if nothing mutated the index while the manifest was
+            // written WITHOUT the lock. If a create/unlink/write raced this sync, the
+            // change is not in the manifest just written; clearing dirty here would
+            // drop it from tape and suppress the next sync. Leave it dirty instead.
+            if (index_.version() == snap_version)
+                index_.mark_clean();
+            else
+                std::fprintf(stderr,
+                             "tapir: writer: index changed during manifest write "
+                             "(v%llu -> v%llu) — staying dirty for next sync\n",
+                             static_cast<unsigned long long>(snap_version),
+                             static_cast<unsigned long long>(index_.version()));
             std::fprintf(stderr, "tapir: writer: manifest written at tape file %d\n", out_mtf);
         }
         else

@@ -99,8 +99,15 @@ namespace tapir
         int rename_node(const std::string &from, const std::string &to);
 
         bool dirty() const { return dirty_; }
-        void mark_dirty() { dirty_ = true; }
-        void mark_clean() { dirty_ = false; }
+        void mark_dirty() { dirty_ = true; ++version_; }
+        void mark_clean() { dirty_ = false; } // intentionally leaves version_ alone
+
+        // Monotonic mutation counter, bumped by every index-changing operation (via
+        // mark_dirty) but NOT by serialize() or mark_clean(). The writer snapshots
+        // it under the lock right after serialize(), then — once the manifest is on
+        // tape — only marks the index clean if version() is unchanged, so a FUSE
+        // mutation that raced the (unlocked) tape write is not silently dropped.
+        uint64_t version() const { return version_; }
 
         // Drop the staged temp copy of every file whose data is already on a now-closed
         // tape file (staged_flushed). Called by the writer at sync, once the tape file
@@ -142,6 +149,7 @@ namespace tapir
         std::map<int, Meta> meta_; // data_tape_file -> archive header metadata
         std::string volume_uuid_;  // random v4 UUID, constant per tape; generated on first write
         bool dirty_ = false;
+        uint64_t version_ = 0;     // bumped by mark_dirty(); see version()
     };
 
 } // namespace tapir

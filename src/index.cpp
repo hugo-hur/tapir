@@ -109,7 +109,7 @@ namespace tapir
     {
         Node *n = ensure_path(path, false);
         if (n)
-            dirty_ = true;
+            mark_dirty();
         return n;
     }
 
@@ -147,7 +147,7 @@ namespace tapir
             m.created = created;
             meta_[dtf] = m;
         }
-        dirty_ = true;
+        mark_dirty();
     }
     bool Index::fill_block_location(const std::string &name, int tape_file,
                                    int64_t block, int64_t offset)
@@ -179,7 +179,7 @@ namespace tapir
         if (it == parent->children.end() || !it->second->is_dir || !it->second->children.empty())
             return false;
         parent->children.erase(it);
-        dirty_ = true;
+        mark_dirty();
         return true;
     }
     bool Index::unlink_file(const std::string &path)
@@ -194,7 +194,7 @@ namespace tapir
         if (it == parent->children.end() || it->second->is_dir)
             return false;
         parent->children.erase(it); // index-only: archived data is left untouched
-        dirty_ = true;
+        mark_dirty();
         return true;
     }
 
@@ -449,7 +449,7 @@ namespace tapir
         src->name = to_parts.back();
         to_parent->children.emplace(to_parts.back(), std::move(from_it->second));
         from_parent->children.erase(from_parts.back());
-        dirty_ = true;
+        mark_dirty();
         return 0;
     }
 

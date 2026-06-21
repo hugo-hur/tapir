@@ -81,6 +81,51 @@ static void test_mtime_survives_serialize_load()
     CHECK(c && c->mtime == 0);
 }
 
+// Guards the lost-update fix in WriterThread::sync. The manifest is snapshotted
+// under the state lock, then written to tape WITHOUT it; mark_clean must only fire
+// if no mutation raced that window. That rests on three Index invariants:
+//   (1) every mutation advances version(),
+//   (2) serialize() does NOT (so the writer's snapshot is stable across it),
+//   (3) mark_clean() does NOT (so a clean index doesn't look "changed").
+// If any regress, the writer would either never mark clean (stuck dirty) or
+// silently drop a racing update from the on-tape manifest.
+static void test_version_tracks_mutations_not_serialize()
+{
+    std::puts("-- version() advances on mutations, stable across serialize/mark_clean");
+    Index idx = make_index();
+
+    const uint64_t v0 = idx.version();
+    idx.add_file("a.txt", 10, "sha_a", 0, 256, 1000, 0644);
+    CHECK(idx.version() != v0);                 // add_file mutated
+    const uint64_t v1 = idx.version();
+
+    idx.create_file("b.txt");
+    CHECK(idx.version() != v1);                 // create_file mutated
+    const uint64_t v2 = idx.version();
+
+    idx.mark_dirty();                           // explicit (t_release / read self-heal)
+    CHECK(idx.version() != v2);
+    const uint64_t v3 = idx.version();
+
+    // serialize() is read-only w.r.t. version — the value captured right after it is
+    // exactly what the writer's post-write guard compares against.
+    const std::string manifest = idx.serialize(0, 256);
+    CHECK(idx.version() == v3);
+    const uint64_t snap = idx.version();
+
+    // mark_clean clears dirty but must leave version untouched.
+    idx.mark_clean();
+    CHECK(!idx.dirty());
+    CHECK(idx.version() == snap);
+
+    // Emulate a FUSE op racing the unlocked tape write: it bumps version, so the
+    // writer's `version() == snap` guard is false and the index is (correctly) kept
+    // dirty rather than marked clean with the change dropped from tape.
+    CHECK(idx.unlink_file("a.txt"));
+    CHECK(idx.version() != snap);
+    CHECK(idx.dirty());
+}
+
 static void test_last_occurrence_wins()
 {
     std::puts("-- add_file: second call with same path overwrites first (last wins)");
@@ -187,6 +232,7 @@ int main()
 
     test_add_new_file();
     test_mtime_survives_serialize_load();
+    test_version_tracks_mutations_not_serialize();
     test_last_occurrence_wins();
     test_last_occurrence_across_tape_files();
     test_directory_not_overwritten_by_file();
