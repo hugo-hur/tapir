@@ -7,7 +7,11 @@
 // per-member positioning path used by the FUSE mount for fast reads.
 //
 // A sequential scan is run first only to obtain each member's block number;
-// the assertions are on the per-member seek reads.
+// the assertions are on the per-member seek reads. A final case feeds read_member
+// a deliberately WRONG offset to exercise the self-heal: the fast positional read
+// must fail, read_member must fall back to a name-scan from the tape file's start,
+// return the correct content, AND report the corrected (block, offset) — the value
+// the FUSE layer writes back into the index to fix a stale position.
 //
 // See test_tape_common.hpp for the TAPIR_TEST_DEVICE parameterisation / SKIP.
 
@@ -49,6 +53,34 @@ int main()
         check(ok && got == m.content,
               (std::string("read_member seek+content: ") + m.name +
                " @block " + std::to_string(m.block) + "+" + std::to_string(m.offset)).c_str());
+    }
+
+    // Self-heal: pick a member whose header is NOT block-aligned (offset > 0) and
+    // give read_member offset 0 (the block boundary). The fast read then feeds
+    // libarchive from inside the previous member's data and fails; read_member must
+    // fall back to a name-scan, recover the content, and report the corrected
+    // (block, offset) via its out-params — exactly what the FUSE layer caches back.
+    const Member *heal = nullptr;
+    for (const auto &m : ms) if (m.scanned && m.offset > 0) { heal = &m; break; }
+    if (!heal) {
+        check(false, "no non-block-aligned member available to exercise the offset-recovery fallback");
+    } else {
+        Fd out; uint64_t sz = 0;
+        int64_t found_block = -1, found_offset = -1;
+        const int64_t wrong_offset = 0; // block boundary: lands inside the prior member's data
+        bool ok = rtape.read_member(dtf, bf, heal->block, wrong_offset, heal->name,
+                                    out, sz, &found_block, &found_offset);
+        std::vector<std::byte> got;
+        if (ok && out.valid() && sz == heal->content.size()) {
+            got.resize(sz);
+            ok = (::pread(out.get(), got.data(), sz, 0) == static_cast<ssize_t>(sz));
+        } else ok = false;
+        check(ok && got == heal->content,
+              (std::string("read_member recovers content after WRONG offset: ") + heal->name).c_str());
+        check(found_block == heal->block && found_offset == heal->offset,
+              (std::string("fallback reports corrected position: block ") +
+               std::to_string(found_block) + "+" + std::to_string(found_offset) +
+               " (expected " + std::to_string(heal->block) + "+" + std::to_string(heal->offset) + ")").c_str());
     }
 
     return finish();

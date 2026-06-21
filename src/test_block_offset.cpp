@@ -18,7 +18,10 @@
 //
 // This test always runs (no TAPIR_TEST_DEVICE needed). It exercises the real
 // tar I/O primitives (tar_write_file / tar_extract) and pins down the
-// invariant the read-side fix must satisfy.
+// invariant the read-side fix must satisfy. It also covers the *recording*
+// primitive behind read_member's self-heal: a name-scan from the archive start
+// must return the matched member's exact header byte position (out_header_pos),
+// which the FUSE layer divides into the corrected (block, offset) it writes back.
 
 #include "test_tape_common.hpp"   // check(), gen(), make_src(), Fd, finish()
 
@@ -129,6 +132,29 @@ int main()
         a.reset();                             // free archive (+callback state) before fd
         if (rfd >= 0) ::close(rfd);
         check(ok && got == tgt, "offset-correcting helper extracts from block boundary + offset");
+    }
+
+    // 5) RECOVERY primitive: a name-scan from the archive START (what
+    //    Tape::read_member's fallback does after a wrong/missing offset) must
+    //    extract the target AND report its exact header byte position via
+    //    out_header_pos. read_member divides this into found_block = pos/B,
+    //    found_offset = pos%B and returns it; the FUSE layer then writes the
+    //    corrected location back into the index. Assert it equals the P found above.
+    {
+        int rfd = ::open(path.c_str(), O_RDONLY);   // position 0: the archive start
+        struct archive *a = open_read_fd(rfd, B);
+        Fd out; uint64_t sz = 0;
+        la_int64_t found_pos = -1;
+        bool ok = a && tar_extract(a, &tgt_name, out, sz, &found_pos);
+        std::vector<std::byte> got;
+        if (ok && out.valid() && sz == tgt.size()) {
+            got.resize(sz);
+            ok = (::pread(out.get(), got.data(), sz, 0) == static_cast<ssize_t>(sz));
+        } else ok = false;
+        if (a) archive_read_free(a);
+        if (rfd >= 0) ::close(rfd);
+        check(ok && got == tgt, "name-scan fallback extracts the target from archive start");
+        check(found_pos == P, "fallback reports the exact header byte position (-> corrected block/offset)");
     }
 
     ::unlink(path.c_str());
