@@ -55,19 +55,24 @@ int main()
                " @block " + std::to_string(m.block) + "+" + std::to_string(m.offset)).c_str());
     }
 
-    // Self-heal: pick a member whose header is NOT block-aligned (offset > 0) and
-    // give read_member offset 0 (the block boundary). The fast read then feeds
-    // libarchive from inside the previous member's data and fails; read_member must
-    // fall back to a name-scan, recover the content, and report the corrected
-    // (block, offset) via its out-params — exactly what the FUSE layer caches back.
+    // Self-heal: feed read_member a deliberately WRONG offset that points INTO a
+    // member's data instead of at its tar header. The fast read then hands libarchive
+    // non-header bytes and fails; read_member must fall back to a name-scan from the
+    // tape file's start, recover the content, and report the corrected (block, offset)
+    // via its out-params — exactly what the FUSE layer writes back to fix a stale
+    // position. We use the largest member (it certainly has a >=512-byte data record)
+    // and offset = its header offset + 512, i.e. its first data record. Note: a wrong
+    // offset that happens to land on ANOTHER member's header would be extracted
+    // successfully (wrong member, no fallback), so it must point at data, not a header.
     const Member *heal = nullptr;
-    for (const auto &m : ms) if (m.scanned && m.offset > 0) { heal = &m; break; }
-    if (!heal) {
-        check(false, "no non-block-aligned member available to exercise the offset-recovery fallback");
+    for (auto &m : ms) if (m.scanned && (!heal || m.content.size() > heal->content.size())) heal = &m;
+    const int64_t bsize = static_cast<int64_t>(bf) * 512;
+    if (!heal || heal->offset + 512 >= bsize) {
+        check(false, "no suitable member to exercise the offset-recovery fallback");
     } else {
+        const int64_t wrong_offset = heal->offset + 512; // into the member's data, not its header
         Fd out; uint64_t sz = 0;
         int64_t found_block = -1, found_offset = -1;
-        const int64_t wrong_offset = 0; // block boundary: lands inside the prior member's data
         bool ok = rtape.read_member(dtf, bf, heal->block, wrong_offset, heal->name,
                                     out, sz, &found_block, &found_offset);
         std::vector<std::byte> got;
