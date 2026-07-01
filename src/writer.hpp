@@ -7,6 +7,12 @@
 // so the FUSE dispatch thread never blocks on tape I/O. The public interface
 // is intentionally minimal: callers enqueue a file write or request a sync;
 // internal queue types and the thread loop are implementation details.
+//
+// Work is queued as WriterTask objects. WriterTask is the SOLE friend of
+// WriterThread and brokers access to the writer's private state to its
+// subclasses through the protected accessors below — so a new kind of task is
+// added by subclassing WriterTask alone, with no extra friend declaration and
+// no direct field access. Concrete tasks live in writer.cpp.
 
 #pragma once
 
@@ -16,7 +22,6 @@
 
 #include <condition_variable>
 #include <deque>
-#include <functional>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -32,9 +37,35 @@ class  Tape;
 class  Index;
 struct Node;
 struct Staged;
+class  WriterThread;
+
+// Base class for a background-writer work item. Concrete tasks subclass this and
+// implement run(). WriterThread grants friendship to THIS class only; the
+// protected accessors carry that access down to subclasses, so subclasses never
+// need to be friends themselves and never touch WriterThread's fields directly.
+class WriterTask
+{
+public:
+    virtual ~WriterTask() = default;      // virtual: destroyed via unique_ptr<WriterTask>
+    virtual void run(WriterThread &w) = 0;
+
+protected:
+    // Broker accessors (defined in writer.cpp, where WriterThread is complete).
+    // Plain state:
+    static Tape       &tape(WriterThread &w);
+    static Index      &index(WriterThread &w);
+    static std::mutex &state_mtx(WriterThread &w);
+    static int         block_factor(WriterThread &w);
+    // The currently-open data tape file (empty between a sync and the next write).
+    // Returned as the raw optional for read/reset; construction of the private
+    // OpenWrite goes through ensure_open() (the one step that needs friendship).
+    static auto       &open_write(WriterThread &w);   // std::optional<WriterThread::OpenWrite>&
+    static bool         ensure_open(WriterThread &w);  // open a data tape file if none is in progress
+};
 
 class WriterThread
 {
+    friend class WriterTask; // sole friend; brokers state access to all task subclasses
 public:
     WriterThread(Tape &tape, int block_factor, std::mutex &state_mtx, Index &index);
     ~WriterThread() = default; // ~jthread() handles request_stop() + join()
@@ -60,7 +91,7 @@ private:
 
     std::mutex               queue_mtx_;
     std::condition_variable_any queue_cv_;
-    std::deque<std::function<void()>> queue_;
+    std::deque<std::unique_ptr<WriterTask>> queue_;
     std::jthread             thread_;
 
     // All files written between two sync() calls accumulate into one tape file.
@@ -77,8 +108,8 @@ private:
 
     enum class WaitResult { HasWork, Stopping };
 
-    void push(std::function<void()> task);
-    void run(std::stop_token st);
+    void push(std::unique_ptr<WriterTask> task);
+    void worker_loop(std::stop_token st);
     WaitResult wait_for_work(std::unique_lock<std::mutex> &lk, std::stop_token st);
 };
 
