@@ -18,6 +18,12 @@ namespace tapir
 
     using json = nlohmann::json;
 
+    // On-tape manifest format version. v1 (pre-2026-06) is a bare JSON array of
+    // archives. v2 is an object { format_version, volume_uuid, generations, archives }
+    // — the "generations" directory lets a reader locate every generation's manifest
+    // from one manifest. load() accepts both; serialize() always writes the latest.
+    static constexpr int kManifestFormatVersion = 2;
+
     static std::vector<std::string> split(const std::string &p)
     {
         std::vector<std::string> parts;
@@ -141,7 +147,6 @@ namespace tapir
         if (meta_.find(dtf) == meta_.end())
         { // register this archive's header metadata
             Meta m;
-            m.manifest_tape_file = 0; // 0 = not yet stamped; serialize() fills the real position
             m.block_factor = bf;
             m.source = source;
             m.created = created;
@@ -202,19 +207,39 @@ namespace tapir
     void Index::load(const std::string &text)
     {
         json root = json::parse(text);
-        if (!root.is_array())
-            throw std::runtime_error("manifest: top level is not an array");
+
+        // Accept both formats: v2 is { format_version, generations, archives }; v1 is
+        // a bare array of archives (from which the directory is derived below).
+        const json *archives = nullptr;
+        const bool v2 = root.is_object();
+        if (v2)
+        {
+            auto ait = root.find("archives");
+            if (ait == root.end() || !ait->is_array())
+                throw std::runtime_error("manifest: object form missing 'archives' array");
+            archives = &*ait;
+            if (auto git = root.find("generations"); git != root.end() && git->is_array())
+                for (const auto &g : *git)
+                    manifests_[g.value("manifest_tape_file", 0)] = g.value("generation", 0ULL);
+        }
+        else if (root.is_array())
+            archives = &root; // v1 legacy
+        else
+            throw std::runtime_error("manifest: top level is neither an object nor an array");
 
         bool first = true;
-        for (const auto &arc : root)
+        for (const auto &arc : *archives)
         {
             if (!arc.is_array() || arc.empty())
                 throw std::runtime_error("manifest: archive entry is not a non-empty array");
             const json &h = arc[0];
             const int dtf = h.value("data_tape_file", 0);
             const int bf = h.value("block_factor", 0);
+            // v1: derive the manifest directory from each archive's per-archive field.
+            if (!v2)
+                if (const int mtf = h.value("manifest_tape_file", 0); mtf > 0)
+                    manifests_[mtf] = h.value("write_generation", 0ULL);
             Meta m;
-            m.manifest_tape_file = h.value("manifest_tape_file", 0); // 0 = unknown (re-stamped on next write)
             m.block_factor = bf;
             m.generation = h.value("write_generation", 0ULL);
             m.source = h.value("source", std::string{});
@@ -323,7 +348,7 @@ namespace tapir
         if (gmtime_r(&t, &tmv))
             std::strftime(now, sizeof now, "%Y-%m-%dT%H:%M:%S", &tmv);
 
-        json out = json::array();
+        json archives = json::array();
         int idx = 0;
         for (const auto &[dtf, v] : groups)
         {
@@ -334,25 +359,10 @@ namespace tapir
             for (const auto &pr : v)
                 total += pr.second->size;
 
-            // manifest_tape_file: the tape file of the manifest indexing this archive.
-            // Fill it the first time the archive is stamped (0 = never stamped) with
-            // the real position this manifest lands at; preserve it afterwards so every
-            // archive keeps the manifest location of its own generation. A -1 caller
-            // (the FUSE writer, whose one data file is immediately followed by its
-            // manifest) falls back to dtf+1.
-            int arc_mtf = is_new ? 0 : mit->second.manifest_tape_file;
-            if (arc_mtf == 0)
-            {
-                arc_mtf = (manifest_tape_file >= 0) ? manifest_tape_file : dtf + 1;
-                if (!is_new)
-                    mit->second.manifest_tape_file = arc_mtf; // persist across syncs
-            }
-
             json arc = json::array();
             json h = json::object();
             h["index"] = idx;
             h["data_tape_file"] = dtf;
-            h["manifest_tape_file"] = arc_mtf;
             h["volume_uuid"] = volume_uuid_;
             h["write_generation"] = gen;
             h["source"] = is_new ? source : mit->second.source;
@@ -381,13 +391,12 @@ namespace tapir
                 f["verified_with"] = nullptr;
                 arc.push_back(std::move(f));
             }
-            out.push_back(std::move(arc));
+            archives.push_back(std::move(arc));
             ++idx;
 
             if (is_new) // record so latest_generation() reflects this write
             {
                 Meta m;
-                m.manifest_tape_file = arc_mtf;
                 m.block_factor = new_bf;
                 m.generation = gen;
                 m.source = source;
@@ -395,7 +404,33 @@ namespace tapir
                 meta_[dtf] = m;
             }
         }
-        return out.dump();
+
+        // Record this manifest's own tape file in the generation directory (keyed by
+        // tape file, labelled with the highest generation it contains). Every manifest
+        // thus lists itself and all earlier ones, so the snapshot view can seek to any
+        // generation's manifest after reading a single (e.g. the latest) manifest.
+        if (manifest_tape_file >= 0)
+            manifests_[manifest_tape_file] = latest_generation();
+
+        json gens = json::array();
+        for (const auto &[mtf, g] : manifests_)
+            gens.push_back(json::object({{"generation", g}, {"manifest_tape_file", mtf}}));
+
+        json root = json::object();
+        root["format_version"] = kManifestFormatVersion;
+        root["volume_uuid"] = volume_uuid_;
+        root["generations"] = std::move(gens);
+        root["archives"] = std::move(archives);
+        return root.dump();
+    }
+
+    std::vector<std::pair<uint64_t, int>> Index::generations() const
+    {
+        std::vector<std::pair<uint64_t, int>> out;
+        out.reserve(manifests_.size());
+        for (const auto &[mtf, gen] : manifests_) // map is ordered by tape file
+            out.emplace_back(gen, mtf);
+        return out;
     }
 
     // ── rename ────────────────────────────────────────────────────────────────────

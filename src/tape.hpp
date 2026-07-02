@@ -152,8 +152,10 @@ namespace tapir
         // Update current_file_ tracking after the caller closes a write Fd.
         void note_write_done(int tape_file);
 
-        // Write a manifest tar at EOD. Returns the tape file number via `out_tape_file`.
-        bool write_manifest_at_eod(const std::string &manifest_json,
+        // Write a manifest tar at EOD. `make_manifest` receives the tape file the
+        // manifest will occupy (so the manifest can record its own location) and
+        // returns the manifest JSON; the same value is reported via `out_tape_file`.
+        bool write_manifest_at_eod(const std::function<std::string(int manifest_tape_file)> &make_manifest,
                                    int &out_tape_file);
 
         // Rewind to start of tape and write the manifest as tape file 0.

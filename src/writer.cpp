@@ -123,25 +123,29 @@ namespace tapir
                 std::fprintf(stderr, "tapir: writer: closed tape file %d\n", tf);
             }
 
-            std::string manifest;
+            // write_manifest_at_eod finds the tape file the manifest will occupy and
+            // hands it to this callback, so serialize() can record the manifest's own
+            // location in the generation directory. The callback runs on this (writer)
+            // thread before the tape write, holding state_mtx only for the serialise.
             uint64_t snap_version = 0;
-            {
-                std::lock_guard<std::mutex> gl(state_mtx(w));
-                // The tape file is now closed and re-readable, so drop the staged temp
-                // copies of the files it holds. This also lets serialize() group them
-                // under their real data_tape_file instead of treating them as new staged
-                // files. Files released *during* this sync are not yet flushed and keep
-                // their staged copy for the next sync.
-                index(w).release_flushed_staged();
-                manifest = index(w).serialize(0, block_factor(w));
-                // Snapshot the index version that produced this manifest. serialize()
-                // does not advance it, so any FUSE mutation landing during the unlocked
-                // tape write below will push version() past this value.
-                snap_version = index(w).version();
-            }
-
             int out_mtf = 0;
-            const bool ok = tape(w).write_manifest_at_eod(manifest, out_mtf);
+            const bool ok = tape(w).write_manifest_at_eod(
+                [&](int manifest_pos) {
+                    std::lock_guard<std::mutex> gl(state_mtx(w));
+                    // The tape file is now closed and re-readable, so drop the staged
+                    // temp copies of the files it holds. This also lets serialize()
+                    // group them under their real data_tape_file instead of treating
+                    // them as new staged files. Files released *during* this sync are
+                    // not yet flushed and keep their staged copy for the next sync.
+                    index(w).release_flushed_staged();
+                    std::string m = index(w).serialize(0, block_factor(w), manifest_pos);
+                    // Snapshot the index version that produced this manifest. serialize()
+                    // does not advance it, so any FUSE mutation landing during the
+                    // (unlocked) tape write below will push version() past this value.
+                    snap_version = index(w).version();
+                    return m;
+                },
+                out_mtf);
             if (ok)
             {
                 std::lock_guard<std::mutex> gl(state_mtx(w));

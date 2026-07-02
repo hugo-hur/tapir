@@ -10,6 +10,7 @@
 
 #include <cstdio>
 #include <memory>
+#include <set>
 #include <string>
 
 using namespace tapir;
@@ -129,33 +130,44 @@ static void test_version_tracks_mutations_not_serialize()
     CHECK(idx.dirty());
 }
 
-// Guards the manifest_tape_file fix (so the future .tapir/ snapshot view can trust
-// it). An import indexes several data files under ONE manifest, so every archive
-// header must record that manifest's real tape file — not the old data_file+1 guess.
-// With no position given, it falls back to data_file+1 (the FUSE-writer layout).
-static void test_manifest_tape_file_records_real_position()
+// Guards the v2 manifest format + generations directory (the basis for the future
+// .tapir/ snapshot view): the manifest root is an object holding a dedicated
+// "generations" array of every manifest's location, not a per-archive field; each
+// manifest records its own location; and the old v1 bare-array format still loads.
+static void test_manifest_generations_directory()
 {
-    std::puts("-- serialize: manifest_tape_file = real manifest position (not data_file+1)");
-    // Import-style: data files 0,1,2 all indexed by one manifest landing at file 3.
+    std::puts("-- serialize/load: v2 object + generations directory");
+    // Import-style: data files 0,1,2 indexed by one manifest landing at file 3.
     Index idx = make_index();
     idx.add_file("a", 10, "sa", 0, 256, 1000, 0644);
     idx.add_file("b", 20, "sb", 1, 256, 1000, 0644);
     idx.add_file("c", 30, "sc", 2, 256, 1000, 0644);
     json doc = json::parse(idx.serialize(-1, 256, /*manifest_tape_file=*/3));
-    int headers = 0;
-    for (const auto &arc : doc) { CHECK(arc.at(0).at("manifest_tape_file") == 3); ++headers; }
-    CHECK(headers == 3); // three data-file archives, all pointing at manifest file 3
+    CHECK(doc.is_object());
+    CHECK(doc.value("format_version", 0) == 2);
+    CHECK(doc.at("archives").is_array() && doc.at("archives").size() == 3);
+    // location moved out of the per-archive header into the dedicated directory
+    CHECK(!doc.at("archives").at(0).at(0).contains("manifest_tape_file"));
+    CHECK(doc.at("generations").is_array() && doc.at("generations").size() == 1);
+    CHECK(doc.at("generations").at(0).at("manifest_tape_file") == 3);
 
-    // It must persist: a second (cumulative) serialize keeps the original position
-    // even though this manifest lands somewhere else.
-    json again = json::parse(idx.serialize(-1, 256, /*manifest_tape_file=*/9));
-    for (const auto &arc : again) CHECK(arc.at(0).at("manifest_tape_file") == 3);
+    // Load it back and re-serialize at a new location: the directory now lists both.
+    Index loaded;
+    loaded.load(doc.dump());
+    CHECK(loaded.generations().size() == 1 && loaded.generations()[0].second == 3);
+    json doc2 = json::parse(loaded.serialize(-1, 256, /*manifest_tape_file=*/5));
+    std::set<int> locs;
+    for (const auto &g : doc2.at("generations")) locs.insert(g.at("manifest_tape_file").get<int>());
+    CHECK(locs.size() == 2 && locs.count(3) && locs.count(5));
 
-    // Fallback: no position given -> data_file+1 (writer layout, one data file).
-    Index w = make_index();
-    w.add_file("x", 5, "sx", 7, 256, 1000, 0644);
-    json wj = json::parse(w.serialize(-1, 256));
-    CHECK(wj.at(0).at(0).at("manifest_tape_file") == 8); // 7 + 1
+    // v1 legacy (bare array with a per-archive manifest_tape_file) must still load,
+    // and its directory is derived from that field.
+    const char *v1 = R"([[{"data_tape_file":0,"manifest_tape_file":1,"write_generation":0,"block_factor":256},
+                          {"path":"old","size":4,"mtime":1000}]])";
+    Index legacy;
+    legacy.load(v1);
+    CHECK(legacy.resolve("old") != nullptr);
+    CHECK(legacy.generations().size() == 1 && legacy.generations()[0].second == 1);
 }
 
 static void test_last_occurrence_wins()
@@ -265,7 +277,7 @@ int main()
     test_add_new_file();
     test_mtime_survives_serialize_load();
     test_version_tracks_mutations_not_serialize();
-    test_manifest_tape_file_records_real_position();
+    test_manifest_generations_directory();
     test_last_occurrence_wins();
     test_last_occurrence_across_tape_files();
     test_directory_not_overwritten_by_file();

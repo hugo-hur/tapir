@@ -469,13 +469,16 @@ namespace tapir
         current_file_ = tape_file + 1;
     }
 
-    bool Tape::write_manifest_at_eod(const std::string &manifest_json, int &out_tape_file)
+    bool Tape::write_manifest_at_eod(const std::function<std::string(int)> &make_manifest, int &out_tape_file)
     {
         if (!eod())
             return false;
         out_tape_file = file_number(); // also updates current_file_
         if (out_tape_file < 0)
             return false;
+        // The manifest's tape file is now known; let the caller build it with that
+        // position embedded (so it can record its own location in the directory).
+        const std::string manifest_json = make_manifest(out_tape_file);
         if (!write_tape_file(mbf_,
                              [&manifest_json](struct archive *a)
                              { return tar_write_member(a, "manifest.json", manifest_json); }))

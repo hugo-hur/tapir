@@ -157,7 +157,8 @@ static int do_verify(const std::string &device, int bf, int mbf, bool verbose)
     if (reindexed > 0)
     {
         int out_tf = 0;
-        if (!tape.write_manifest_at_eod(index.serialize(0, bf), out_tf))
+        if (!tape.write_manifest_at_eod(
+                [&](int mp) { return index.serialize(0, bf, mp); }, out_tf))
             std::fprintf(stderr, "tfsck: warning: failed to write updated manifest\n");
         else
             std::printf("--- filled in %d block offset(s), new manifest at tape file %d ---\n",
@@ -431,8 +432,10 @@ static int do_upgrade_manifest(const std::string &device, int mbf)
     std::fprintf(stderr, "tfsck: writing upgraded manifest with PAX magic at end of tape...\n");
 
     // write_manifest_at_eod uses tar_write_member which adds the magic xattr.
+    // Preserve the manifest content verbatim (this only adds the magic), so the
+    // position argument is ignored — the legacy manifest's own format is kept.
     int out_tf = 0;
-    if (!tape.write_manifest_at_eod(json, out_tf))
+    if (!tape.write_manifest_at_eod([&](int) { return json; }, out_tf))
     {
         std::fprintf(stderr, "tfsck: failed to write upgraded manifest\n");
         return 1;

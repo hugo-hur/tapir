@@ -269,12 +269,12 @@ static int do_init(const std::string &dev, int mbf, bool force)
                      "         blank index at start of tape. Existing data will be inaccessible\n"
                      "         (on WORM tapes the drive will reject this write).\n",
                      count);
-        ok = tape.overwrite_from_start(mbf, [&]() { return idx.serialize(-1, mbf); });
+        ok = tape.overwrite_from_start(mbf, [&]() { return idx.serialize(-1, mbf, 0); }); // manifest at file 0
     }
     else
     {
         int dtf = 0;
-        ok = tape.append(mbf, nullptr, [&](int) { return idx.serialize(-1, mbf); }, dtf);
+        ok = tape.append(mbf, nullptr, [&](int mp) { return idx.serialize(-1, mbf, mp); }, dtf);
     }
     if (!ok)
     {

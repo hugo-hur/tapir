@@ -137,13 +137,18 @@ namespace tapir
         const std::string &volume_uuid() const { return volume_uuid_; }
         uint64_t latest_generation() const;
 
+        // The manifest directory: every manifest ever written on this tape, as
+        // (write_generation, manifest_tape_file) pairs sorted by tape file. Each
+        // manifest records its own location, so loading one manifest yields the
+        // location of them all — what the future .tapir/ snapshot view seeks with.
+        std::vector<std::pair<uint64_t, int>> generations() const;
+
         std::string source;
         std::string created;
 
     private:
         struct Meta
         {
-            int manifest_tape_file = 0;
             int block_factor = 0;
             uint64_t generation = 0; // write-generation this archive was written in
             std::string source, created;
@@ -153,7 +158,8 @@ namespace tapir
         Node *parent_of(const std::vector<std::string> &parts);
 
         std::unique_ptr<Node> root_ = std::make_unique<Node>();
-        std::map<int, Meta> meta_; // data_tape_file -> archive header metadata
+        std::map<int, Meta> meta_;       // data_tape_file -> archive header metadata
+        std::map<int, uint64_t> manifests_; // manifest_tape_file -> write_generation (the directory)
         std::string volume_uuid_;  // random v4 UUID, constant per tape; generated on first write
         bool dirty_ = false;
         uint64_t version_ = 0;     // bumped by mark_dirty(); see version()
