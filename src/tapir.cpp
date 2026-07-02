@@ -80,6 +80,7 @@ namespace
         std::map<std::string, CacheEntry> cache;
         std::map<uint64_t, std::unique_ptr<WriteHandle>> writers;
         uint64_t next_h = 1;
+        std::string manifest_json; // the loaded manifest, served at /.tapir/manifest.json
 
         std::unique_ptr<WriterThread> writer;
     };
@@ -114,6 +115,44 @@ namespace
             st->st_size = static_cast<off_t>(n->size);
             st->st_blocks = static_cast<blkcnt_t>((n->size + 511) / 512);
         }
+    }
+
+    // ── hidden .tapir/ control directory ────────────────────────────────────────
+    // /.tapir is hidden (never listed by the root readdir, because it is not a node
+    // in the index) but is reachable by name: it currently exposes the loaded
+    // manifest as /.tapir/manifest.json (read-only). The future generation-snapshot
+    // view lives under here too (/.tapir/gen-N/…), so all of it is served virtually
+    // and every mutation below it is refused.
+    constexpr const char *kTapirDir      = "/.tapir";
+    constexpr const char *kManifestPath  = "/.tapir/manifest.json";
+
+    // True for "/.tapir" and anything under "/.tapir/".
+    static bool under_tapir(const char *path)
+    {
+        return std::strcmp(path, kTapirDir) == 0 ||
+               std::strncmp(path, "/.tapir/", 8) == 0;
+    }
+
+    void fill_virtual_dir(struct stat *st)
+    {
+        std::memset(st, 0, sizeof(*st));
+        st->st_uid = g->uid;
+        st->st_gid = g->gid;
+        st->st_atime = st->st_ctime = st->st_mtime = g->mtime;
+        st->st_mode = S_IFDIR | 0555; // r-x: traversable, never writable
+        st->st_nlink = 2;
+    }
+
+    void fill_virtual_file(struct stat *st, std::size_t size)
+    {
+        std::memset(st, 0, sizeof(*st));
+        st->st_uid = g->uid;
+        st->st_gid = g->gid;
+        st->st_atime = st->st_ctime = st->st_mtime = g->mtime;
+        st->st_mode = S_IFREG | 0444; // read-only
+        st->st_nlink = 1;
+        st->st_size = static_cast<off_t>(size);
+        st->st_blocks = static_cast<blkcnt_t>((size + 511) / 512);
     }
 
     // Flush the index to tape. Temporarily releases `lk` while the writer thread
@@ -157,6 +196,8 @@ namespace
     int t_getattr(const char *path, struct stat *st, struct fuse_file_info *)
     {
         std::lock_guard<std::mutex> lk(g->mtx);
+        if (std::strcmp(path, kTapirDir) == 0) { fill_virtual_dir(st); return 0; }
+        if (std::strcmp(path, kManifestPath) == 0) { fill_virtual_file(st, g->manifest_json.size()); return 0; }
         const Node *n = g->index.resolve(path);
         if (!n)
             return -ENOENT;
@@ -168,6 +209,15 @@ namespace
                   off_t, struct fuse_file_info *, enum fuse_readdir_flags)
     {
         std::lock_guard<std::mutex> lk(g->mtx);
+        if (std::strcmp(path, kTapirDir) == 0) // hidden control dir: list the manifest
+        {
+            filler(buf, ".", nullptr, 0, static_cast<fuse_fill_dir_flags>(0));
+            filler(buf, "..", nullptr, 0, static_cast<fuse_fill_dir_flags>(0));
+            struct stat st;
+            fill_virtual_file(&st, g->manifest_json.size());
+            filler(buf, "manifest.json", &st, 0, FUSE_FILL_DIR_PLUS);
+            return 0;
+        }
         const Node *n = g->index.resolve(path);
         if (!n)
             return -ENOENT;
@@ -187,6 +237,15 @@ namespace
     int t_open(const char *path, struct fuse_file_info *fi)
     {
         std::lock_guard<std::mutex> lk(g->mtx);
+        if (std::strcmp(path, kManifestPath) == 0)
+        {
+            if ((fi->flags & O_ACCMODE) != O_RDONLY)
+                return -EPERM; // read-only virtual file
+            fi->fh = 0;
+            return 0;
+        }
+        if (std::strcmp(path, kTapirDir) == 0)
+            return -EISDIR;
         const Node *n = g->index.resolve(path);
         if (!n)
             return -ENOENT;
@@ -201,6 +260,8 @@ namespace
     int t_create(const char *path, mode_t mode, struct fuse_file_info *fi)
     {
         std::lock_guard<std::mutex> lk(g->mtx);
+        if (under_tapir(path))
+            return -EPERM; // the .tapir control dir is read-only
         if (g->index.resolve(path))
             return -EEXIST;
         Node *n = g->index.create_file(path);
@@ -244,6 +305,8 @@ namespace
     int t_truncate(const char *path, off_t size, struct fuse_file_info *)
     {
         std::lock_guard<std::mutex> lk(g->mtx);
+        if (under_tapir(path))
+            return -EPERM;
         Node *n = g->index.resolve(path);
         if (!n)
             return -ENOENT;
@@ -260,6 +323,15 @@ namespace
                struct fuse_file_info *)
     {
         std::lock_guard<std::mutex> lk(g->mtx);
+        if (std::strcmp(path, kManifestPath) == 0) // serve the loaded manifest verbatim
+        {
+            const std::string &m = g->manifest_json;
+            if (offset < 0 || static_cast<std::size_t>(offset) >= m.size())
+                return 0;
+            const std::size_t n = std::min(size, m.size() - static_cast<std::size_t>(offset));
+            std::memcpy(buf, m.data() + offset, n);
+            return static_cast<int>(n);
+        }
         Node *n = g->index.resolve(path);
         if (!n)
             return -ENOENT;
@@ -368,6 +440,8 @@ namespace
     {
         if (flags) return -EINVAL; // RENAME_EXCHANGE and friends not supported
         std::lock_guard<std::mutex> lk(g->mtx);
+        if (under_tapir(from) || under_tapir(to))
+            return -EPERM;
         // Evict cache for the old path and any children (directory rename).
         const std::string from_str(from);
         const std::string prefix = from_str + "/";
@@ -382,6 +456,8 @@ namespace
     int t_unlink(const char *path)
     {
         std::lock_guard<std::mutex> lk(g->mtx);
+        if (under_tapir(path))
+            return -EPERM;
         g->cache.erase(path);
         return g->index.unlink_file(path) ? 0 : -ENOENT;
     }
@@ -389,6 +465,8 @@ namespace
     int t_mkdir(const char *path, mode_t)
     {
         std::lock_guard<std::mutex> lk(g->mtx);
+        if (under_tapir(path))
+            return -EPERM;
         if (g->index.resolve(path))
             return -EEXIST;
         return g->index.make_dir(path) ? 0 : -ENOENT;
@@ -397,6 +475,8 @@ namespace
     int t_rmdir(const char *path)
     {
         std::lock_guard<std::mutex> lk(g->mtx);
+        if (under_tapir(path))
+            return -EPERM;
         const Node *n = g->index.resolve(path);
         if (!n)
             return -ENOENT;
@@ -412,6 +492,8 @@ namespace
     static int t_chmod(const char *path, mode_t mode, struct fuse_file_info *)
     {
         std::lock_guard<std::mutex> lk(g->mtx);
+        if (under_tapir(path))
+            return -EPERM;
         Node *n = g->index.resolve(path);
         if (!n)
             return -ENOENT;
@@ -429,6 +511,8 @@ namespace
                          struct fuse_file_info *)
     {
         std::lock_guard<std::mutex> lk(g->mtx);
+        if (under_tapir(path))
+            return -EPERM;
         Node *n = g->index.resolve(path);
         if (!n)
             return -ENOENT;
@@ -546,6 +630,7 @@ int main(int argc, char **argv)
         std::fprintf(stderr, "tapir: %s\n", ex.what());
         return 1;
     }
+    st.manifest_json = std::move(manifest_json); // served read-only at /.tapir/manifest.json
 
     g = &st; // WriterThread is created in t_init after fuse_main() daemonises
 
