@@ -119,9 +119,16 @@ namespace tapir
 
         // Serialise to manifest.json. Staged files are assigned to a new archive at
         // tape file `new_data_tape_file` with blocking factor `new_block_factor`.
+        // `manifest_tape_file` is the tape file this manifest will occupy; it fills in
+        // each archive's `manifest_tape_file` the first time that archive is written
+        // (and is preserved on later cumulative manifests, so every archive keeps the
+        // location of the manifest from its own generation — what the future snapshot
+        // view needs). Pass -1 to fall back to the data-file+1 layout used by the FUSE
+        // writer, whose single data file is always immediately followed by its manifest.
         // Generates the volume UUID on first write and stamps the new archive with
         // the next write-generation (so it is non-const).
-        std::string serialize(int new_data_tape_file, int new_block_factor);
+        std::string serialize(int new_data_tape_file, int new_block_factor,
+                              int manifest_tape_file = -1);
 
         std::vector<FileRec> flat() const; // all current files
 

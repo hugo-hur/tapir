@@ -208,8 +208,10 @@ static int do_import(const std::string &dev, const std::vector<int> &files, int 
     }
 
     int dtf = 0;
-    if (!tape.append(mbf, nullptr, [&](int)
-                     { return idx.serialize(-1, mbf); }, dtf))
+    // write_data is null, so the manifest lands at the tape file passed to make_manifest;
+    // record it so every indexed data file points at this import's manifest.
+    if (!tape.append(mbf, nullptr, [&](int manifest_tf)
+                     { return idx.serialize(-1, mbf, manifest_tf); }, dtf))
     {
         std::fprintf(stderr, "mktapir: failed to write updated manifest\n");
         return 1;
@@ -341,7 +343,8 @@ static int do_append(const std::string &dev, const std::string &tarpath,
             if (m.block >= 0)
                 idx.fill_block_location(m.name, data_tape_file, m.block, m.offset);
         }
-        return idx.serialize(-1, mbf);
+        // Data was written at data_tape_file, so this manifest follows it at +1.
+        return idx.serialize(-1, mbf, data_tape_file + 1);
     };
 
     bool ok;

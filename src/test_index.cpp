@@ -6,11 +6,14 @@
 
 #include "index.hpp"
 
+#include <nlohmann/json.hpp>
+
 #include <cstdio>
 #include <memory>
 #include <string>
 
 using namespace tapir;
+using json = nlohmann::json;
 
 static int g_pass = 0, g_fail = 0;
 
@@ -126,6 +129,35 @@ static void test_version_tracks_mutations_not_serialize()
     CHECK(idx.dirty());
 }
 
+// Guards the manifest_tape_file fix (so the future .tapir/ snapshot view can trust
+// it). An import indexes several data files under ONE manifest, so every archive
+// header must record that manifest's real tape file — not the old data_file+1 guess.
+// With no position given, it falls back to data_file+1 (the FUSE-writer layout).
+static void test_manifest_tape_file_records_real_position()
+{
+    std::puts("-- serialize: manifest_tape_file = real manifest position (not data_file+1)");
+    // Import-style: data files 0,1,2 all indexed by one manifest landing at file 3.
+    Index idx = make_index();
+    idx.add_file("a", 10, "sa", 0, 256, 1000, 0644);
+    idx.add_file("b", 20, "sb", 1, 256, 1000, 0644);
+    idx.add_file("c", 30, "sc", 2, 256, 1000, 0644);
+    json doc = json::parse(idx.serialize(-1, 256, /*manifest_tape_file=*/3));
+    int headers = 0;
+    for (const auto &arc : doc) { CHECK(arc.at(0).at("manifest_tape_file") == 3); ++headers; }
+    CHECK(headers == 3); // three data-file archives, all pointing at manifest file 3
+
+    // It must persist: a second (cumulative) serialize keeps the original position
+    // even though this manifest lands somewhere else.
+    json again = json::parse(idx.serialize(-1, 256, /*manifest_tape_file=*/9));
+    for (const auto &arc : again) CHECK(arc.at(0).at("manifest_tape_file") == 3);
+
+    // Fallback: no position given -> data_file+1 (writer layout, one data file).
+    Index w = make_index();
+    w.add_file("x", 5, "sx", 7, 256, 1000, 0644);
+    json wj = json::parse(w.serialize(-1, 256));
+    CHECK(wj.at(0).at(0).at("manifest_tape_file") == 8); // 7 + 1
+}
+
 static void test_last_occurrence_wins()
 {
     std::puts("-- add_file: second call with same path overwrites first (last wins)");
@@ -233,6 +265,7 @@ int main()
     test_add_new_file();
     test_mtime_survives_serialize_load();
     test_version_tracks_mutations_not_serialize();
+    test_manifest_tape_file_records_real_position();
     test_last_occurrence_wins();
     test_last_occurrence_across_tape_files();
     test_directory_not_overwritten_by_file();

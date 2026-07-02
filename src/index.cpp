@@ -141,7 +141,7 @@ namespace tapir
         if (meta_.find(dtf) == meta_.end())
         { // register this archive's header metadata
             Meta m;
-            m.manifest_tape_file = dtf + 1;
+            m.manifest_tape_file = 0; // 0 = not yet stamped; serialize() fills the real position
             m.block_factor = bf;
             m.source = source;
             m.created = created;
@@ -214,7 +214,7 @@ namespace tapir
             const int dtf = h.value("data_tape_file", 0);
             const int bf = h.value("block_factor", 0);
             Meta m;
-            m.manifest_tape_file = h.value("manifest_tape_file", dtf + 1);
+            m.manifest_tape_file = h.value("manifest_tape_file", 0); // 0 = unknown (re-stamped on next write)
             m.block_factor = bf;
             m.generation = h.value("write_generation", 0ULL);
             m.source = h.value("source", std::string{});
@@ -299,7 +299,7 @@ namespace tapir
         return g;
     }
 
-    std::string Index::serialize(int new_dtf, int new_bf)
+    std::string Index::serialize(int new_dtf, int new_bf, int manifest_tape_file)
     {
         if (volume_uuid_.empty())
             volume_uuid_ = security::UuidV4(); // first tapir write to this tape
@@ -334,11 +334,25 @@ namespace tapir
             for (const auto &pr : v)
                 total += pr.second->size;
 
+            // manifest_tape_file: the tape file of the manifest indexing this archive.
+            // Fill it the first time the archive is stamped (0 = never stamped) with
+            // the real position this manifest lands at; preserve it afterwards so every
+            // archive keeps the manifest location of its own generation. A -1 caller
+            // (the FUSE writer, whose one data file is immediately followed by its
+            // manifest) falls back to dtf+1.
+            int arc_mtf = is_new ? 0 : mit->second.manifest_tape_file;
+            if (arc_mtf == 0)
+            {
+                arc_mtf = (manifest_tape_file >= 0) ? manifest_tape_file : dtf + 1;
+                if (!is_new)
+                    mit->second.manifest_tape_file = arc_mtf; // persist across syncs
+            }
+
             json arc = json::array();
             json h = json::object();
             h["index"] = idx;
             h["data_tape_file"] = dtf;
-            h["manifest_tape_file"] = is_new ? dtf + 1 : mit->second.manifest_tape_file;
+            h["manifest_tape_file"] = arc_mtf;
             h["volume_uuid"] = volume_uuid_;
             h["write_generation"] = gen;
             h["source"] = is_new ? source : mit->second.source;
@@ -373,7 +387,7 @@ namespace tapir
             if (is_new) // record so latest_generation() reflects this write
             {
                 Meta m;
-                m.manifest_tape_file = dtf + 1;
+                m.manifest_tape_file = arc_mtf;
                 m.block_factor = new_bf;
                 m.generation = gen;
                 m.source = source;

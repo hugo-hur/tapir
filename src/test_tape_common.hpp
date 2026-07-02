@@ -110,7 +110,7 @@ inline bool write_archive(const char *dev, int bf, std::vector<Member> &ms, int 
         },
         [&](int data_dtf) {
             for (auto &m : ms) idx.add_file(m.name, m.content.size(), m.sha, data_dtf, bf, 0, 0);
-            return idx.serialize(-1, bf);
+            return idx.serialize(-1, bf, data_dtf + 1); // data at data_dtf, manifest at +1
         },
         dtf);
 }
